@@ -25,3 +25,13 @@ shellcheck bootstrap.sh healthcheck.sh install_nix.sh fleetctl
 
 - `docs/control-plane-runbook.md`: bootstrap, operations, and incident handling.
 - `ops/linear-seed-backlog.csv`: ready-to-use objective backlog template.
+- `ops/linear-seed-backlog.json`: machine-readable backlog for automation.
+- `ops/seed_linear_issues.sh`: seed Linear issues from JSON via API key.
+
+## Seed Linear Backlog
+
+```bash
+export LINEAR_API_KEY=lin_api_xxx
+./ops/seed_linear_issues.sh --team-id <TEAM_ID> --dry-run
+./ops/seed_linear_issues.sh --team-id <TEAM_ID>
+```

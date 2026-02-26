@@ -1,0 +1,83 @@
+[
+  {
+    "title": "Harden base OS and verify patch baseline",
+    "priority": 1,
+    "state": "Todo",
+    "description": "Keep Debian base fully patched before every major bootstrap run.",
+    "acceptance_criteria": "`apt list --upgradable` returns only 'Listing...' and no package rows.",
+    "repo": "fleet"
+  },
+  {
+    "title": "Establish Nix as default toolchain entrypoint",
+    "priority": 1,
+    "state": "Todo",
+    "description": "Use Nix shell for all reproducible local workflows.",
+    "acceptance_criteria": "`fleetctl shell` opens successfully and includes git/curl/jq/openssh.",
+    "repo": "fleet"
+  },
+  {
+    "title": "Enable GitHub SSH authentication for write operations",
+    "priority": 1,
+    "state": "Todo",
+    "description": "Register local ed25519 key in GitHub and validate auth.",
+    "acceptance_criteria": "`ssh -T git@github.com` returns authenticated message (non-shell access is expected).",
+    "repo": "fleet"
+  },
+  {
+    "title": "Version and protect fleet toolkit with CI",
+    "priority": 1,
+    "state": "Todo",
+    "description": "Track fleet scripts in git and enforce shell checks in CI.",
+    "acceptance_criteria": "GitHub Actions `Shell CI` passes on push/PR.",
+    "repo": "fleet"
+  },
+  {
+    "title": "Create standardized repo sync cadence",
+    "priority": 2,
+    "state": "Todo",
+    "description": "Run fleet bootstrap as daily/weekly sync point for all managed repos.",
+    "acceptance_criteria": "`fleetctl bootstrap` updates all repos cleanly with no merge conflicts.",
+    "repo": "fleet"
+  },
+  {
+    "title": "Define execution board in Linear",
+    "priority": 1,
+    "state": "Todo",
+    "description": "Create one active project with this backlog and clear ownership/status.",
+    "acceptance_criteria": "At least 10 non-canceled issues exist and one issue is In Progress.",
+    "repo": "linear"
+  },
+  {
+    "title": "Wire GitHub + Linear issue linking workflow",
+    "priority": 2,
+    "state": "Todo",
+    "description": "Adopt branch/PR naming tied to Linear issue IDs.",
+    "acceptance_criteria": "Opening a PR auto-links to matching Linear issue and updates status.",
+    "repo": "linear"
+  },
+  {
+    "title": "Create control-plane runbook and incident checklist",
+    "priority": 1,
+    "state": "Todo",
+    "description": "Maintain a single source of truth for bootstrap, recovery, and checks.",
+    "acceptance_criteria": "Runbook exists, is versioned, and can be followed from a clean machine.",
+    "repo": "fleet"
+  },
+  {
+    "title": "Publish architecture snapshot for Chromebook controller model",
+    "priority": 2,
+    "state": "Todo",
+    "description": "Document ChromeOS/Crostini constraints and remote-core responsibilities.",
+    "acceptance_criteria": "Architecture section includes boundaries, risks, and escalation paths.",
+    "repo": "fleet"
+  },
+  {
+    "title": "Set weekly reliability review loop",
+    "priority": 3,
+    "state": "Todo",
+    "description": "Review healthcheck output, dependency drift, and open risks every week.",
+    "acceptance_criteria": "A recurring checklist exists with dated review entries.",
+    "repo": "fleet"
+  }
+]
+
