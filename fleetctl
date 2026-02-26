@@ -9,6 +9,13 @@ Usage:
   fleetctl install-nix                Install Nix in user mode
   fleetctl bootstrap [repo_url ...]   Create SSH key, clone/update repos
   fleetctl health                     Run local controller health checks
+  fleetctl remote-agent [options]     Handle SSH key + GitHub/VPS auth checks
+  fleetctl vps-discover [options]     Find likely VPS SSH targets from local context
+  fleetctl chat-agent [options]       Synthesize open/saved Codex chats and priorities
+  fleetctl chat-agent-timer [options] Install/manage hourly chat-agent timer
+  fleetctl venture-agent [options]    Analyze repos and generate autonomy optimization queue
+  fleetctl venture-agent-timer [options]
+                                      Install/manage daily venture-agent timer
   fleetctl hub-scan                   Scan inventory into Control Hub DB
   fleetctl hub-serve                  Run scan + local Control Hub dashboard
   fleetctl shell                      Enter nix dev shell (requires nix)
@@ -28,10 +35,32 @@ case "$cmd" in
   health)
     exec "$DIR/healthcheck.sh" "$@"
     ;;
+  remote-agent)
+    exec "$DIR/ops/remote_access_agent.sh" "$@"
+    ;;
+  vps-discover)
+    exec python3 "$DIR/ops/vps_discovery_agent.py" "$@"
+    ;;
+  chat-agent)
+    exec python3 "$DIR/ops/chat_work_agent.py" "$@"
+    ;;
+  chat-agent-timer)
+    exec "$DIR/ops/install_chat_work_agent_timer.sh" "$@"
+    ;;
+  venture-agent)
+    exec python3 "$DIR/ops/venture_autonomy_agent.py" "$@"
+    ;;
+  venture-agent-timer)
+    exec "$DIR/ops/install_venture_agent_timer.sh" "$@"
+    ;;
   hub-scan)
     exec python3 "$DIR/ops/control_hub_agent.py" scan "$@"
     ;;
   hub-serve)
+    if ! command -v sqlite3 >/dev/null 2>&1; then
+      printf '[warn] sqlite3 not found in PATH; CLI DB checks will fail.\n' >&2
+      printf "[warn] install sqlite3 to run: sqlite3 ~/.local/share/fleet-control-hub/control_hub.db '.tables'\n" >&2
+    fi
     exec python3 "$DIR/ops/control_hub_agent.py" scan-serve "$@"
     ;;
   shell)
