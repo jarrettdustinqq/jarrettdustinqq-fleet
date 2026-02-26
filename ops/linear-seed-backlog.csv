@@ -1,0 +1,12 @@
+title,priority,state,description,acceptance_criteria,repo
+"Harden base OS and verify patch baseline",1,Todo,"Keep Debian base fully patched before every major bootstrap run.","`apt list --upgradable` returns only 'Listing...' and no package rows.","fleet"
+"Establish Nix as default toolchain entrypoint",1,Todo,"Use Nix shell for all reproducible local workflows.","`fleetctl shell` opens successfully and includes git/curl/jq/openssh.","fleet"
+"Enable GitHub SSH authentication for write operations",1,Todo,"Register local ed25519 key in GitHub and validate auth.","`ssh -T git@github.com` returns authenticated message (non-shell access is expected).","fleet"
+"Version and protect fleet toolkit with CI",1,Todo,"Track fleet scripts in git and enforce shell checks in CI.","GitHub Actions `Shell CI` passes on push/PR.","fleet"
+"Create standardized repo sync cadence",2,Todo,"Run fleet bootstrap as daily/weekly sync point for all managed repos.","`fleetctl bootstrap` updates all repos cleanly with no merge conflicts.","fleet"
+"Define execution board in Linear",1,Todo,"Create one active project with this backlog and clear ownership/status.","At least 10 non-canceled issues exist and one issue is In Progress.","linear"
+"Wire GitHub + Linear issue linking workflow",2,Todo,"Adopt branch/PR naming tied to Linear issue IDs.","Opening a PR auto-links to matching Linear issue and updates status.","linear"
+"Create control-plane runbook and incident checklist",1,Todo,"Maintain a single source of truth for bootstrap, recovery, and checks.","Runbook exists, is versioned, and can be followed from a clean machine.","fleet"
+"Publish architecture snapshot for Chromebook controller model",2,Todo,"Document ChromeOS/Crostini constraints and remote-core responsibilities.","Architecture section includes boundaries, risks, and escalation paths.","fleet"
+"Set weekly reliability review loop",3,Todo,"Review healthcheck output, dependency drift, and open risks every week.","A recurring checklist exists with dated review entries.","fleet"
+

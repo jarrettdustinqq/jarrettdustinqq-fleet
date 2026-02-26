@@ -1,0 +1,6 @@
+# Add one git URL per line. Example:
+# https://github.com/your-org/continuity-master-plan.git
+# git@github.com:your-org/phantom-shell.git
+https://github.com/jarrettdustinqq/continuity-master-plan.git
+https://github.com/jarrettdustinqq/phantom-shell.git
+https://github.com/jarrettdustinqq/minimal-showcase.git

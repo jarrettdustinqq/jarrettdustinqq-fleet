@@ -1,0 +1,30 @@
+name: Shell CI
+
+on:
+  push:
+    paths:
+      - "**.sh"
+      - "fleetctl"
+      - ".github/workflows/shell-ci.yml"
+  pull_request:
+    paths:
+      - "**.sh"
+      - "fleetctl"
+      - ".github/workflows/shell-ci.yml"
+
+jobs:
+  shell-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Bash syntax
+        run: bash -n bootstrap.sh healthcheck.sh install_nix.sh fleetctl
+
+      - name: ShellCheck
+        run: shellcheck bootstrap.sh healthcheck.sh install_nix.sh fleetctl
+

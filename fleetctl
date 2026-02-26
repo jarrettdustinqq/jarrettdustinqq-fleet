@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  fleetctl install-nix                Install Nix in user mode
+  fleetctl bootstrap [repo_url ...]   Create SSH key, clone/update repos
+  fleetctl health                     Run local controller health checks
+  fleetctl shell                      Enter nix dev shell (requires nix)
+EOF
+}
+
+cmd="${1:-}"
+shift || true
+
+case "$cmd" in
+  install-nix)
+    exec "$DIR/install_nix.sh" "$@"
+    ;;
+  bootstrap)
+    exec "$DIR/bootstrap.sh" "$@"
+    ;;
+  health)
+    exec "$DIR/healthcheck.sh" "$@"
+    ;;
+  shell)
+    exec nix develop "$DIR" -c "${SHELL:-bash}"
+    ;;
+  *)
+    usage
+    exit 1
+    ;;
+esac
