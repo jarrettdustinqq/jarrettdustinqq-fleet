@@ -73,12 +73,34 @@ if [ "$DRY_RUN" -ne 1 ] && [ -z "${LINEAR_API_KEY:-}" ]; then
   exit 1
 fi
 
+if [ "$DRY_RUN" -ne 1 ] && [ "${LINEAR_API_KEY:-}" = "lin_api_xxx" ]; then
+  echo "LINEAR_API_KEY is still set to the placeholder value 'lin_api_xxx'." >&2
+  echo "Create a real key at https://linear.app/settings/api and export it before rerunning." >&2
+  exit 1
+fi
+
 linear_graphql() {
   local payload="$1"
-  curl -fsS https://api.linear.app/graphql \
+  local tmpfile
+  local http_code
+
+  tmpfile="$(mktemp)"
+  http_code="$(curl -sS -o "$tmpfile" -w "%{http_code}" https://api.linear.app/graphql \
     -H "Authorization: $LINEAR_API_KEY" \
     -H "Content-Type: application/json" \
-    --data "$payload"
+    --data "$payload")"
+
+  if [ "$http_code" -ge 400 ] 2>/dev/null; then
+    echo "Linear API request failed with HTTP $http_code." >&2
+    if [ -s "$tmpfile" ]; then
+      jq -r '.errors // .' "$tmpfile" 2>/dev/null >&2 || cat "$tmpfile" >&2
+    fi
+    rm -f "$tmpfile"
+    return 1
+  fi
+
+  cat "$tmpfile"
+  rm -f "$tmpfile"
 }
 
 STATE_RESPONSE=""
