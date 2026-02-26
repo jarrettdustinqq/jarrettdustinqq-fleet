@@ -7,6 +7,8 @@ Small bootstrap toolkit for setting up a controller/dev node quickly.
 - `./fleetctl install-nix`: Install Nix in single-user mode.
 - `./fleetctl bootstrap [repo_url ...]`: Create SSH key, clone/update repos.
 - `./fleetctl health`: Validate local tooling and project workspace state.
+- `./fleetctl hub-scan`: Build/update local Control Hub inventory DB.
+- `./fleetctl hub-serve`: Scan + run local interactive Control Hub dashboard.
 - `./fleetctl shell`: Enter the flake dev shell (requires Nix).
 
 ## Repository List
@@ -24,6 +26,7 @@ shellcheck bootstrap.sh healthcheck.sh install_nix.sh fleetctl
 ## Operational Artifacts
 
 - `docs/control-plane-runbook.md`: bootstrap, operations, and incident handling.
+- `docs/control-hub-agent.md`: local inventory + dashboard usage.
 - `ops/linear-seed-backlog.csv`: ready-to-use objective backlog template.
 - `ops/linear-seed-backlog.json`: machine-readable backlog for automation.
 - `ops/seed_linear_issues.sh`: seed Linear issues from JSON via API key.

@@ -4,11 +4,13 @@ on:
   push:
     paths:
       - "**.sh"
+      - "**.py"
       - "fleetctl"
       - ".github/workflows/shell-ci.yml"
   pull_request:
     paths:
       - "**.sh"
+      - "**.py"
       - "fleetctl"
       - ".github/workflows/shell-ci.yml"
 
@@ -28,3 +30,5 @@ jobs:
       - name: ShellCheck
         run: shellcheck bootstrap.sh healthcheck.sh install_nix.sh fleetctl
 
+      - name: Python syntax
+        run: python3 -m py_compile ops/control_hub_agent.py

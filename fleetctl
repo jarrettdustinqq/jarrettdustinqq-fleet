@@ -9,6 +9,8 @@ Usage:
   fleetctl install-nix                Install Nix in user mode
   fleetctl bootstrap [repo_url ...]   Create SSH key, clone/update repos
   fleetctl health                     Run local controller health checks
+  fleetctl hub-scan                   Scan inventory into Control Hub DB
+  fleetctl hub-serve                  Run scan + local Control Hub dashboard
   fleetctl shell                      Enter nix dev shell (requires nix)
 EOF
 }
@@ -25,6 +27,12 @@ case "$cmd" in
     ;;
   health)
     exec "$DIR/healthcheck.sh" "$@"
+    ;;
+  hub-scan)
+    exec python3 "$DIR/ops/control_hub_agent.py" scan "$@"
+    ;;
+  hub-serve)
+    exec python3 "$DIR/ops/control_hub_agent.py" scan-serve "$@"
     ;;
   shell)
     exec nix develop "$DIR" -c "${SHELL:-bash}"
