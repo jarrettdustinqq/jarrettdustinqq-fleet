@@ -27,6 +27,7 @@ shellcheck bootstrap.sh healthcheck.sh install_nix.sh fleetctl
 
 - `docs/control-plane-runbook.md`: bootstrap, operations, and incident handling.
 - `docs/control-hub-agent.md`: local inventory + dashboard usage.
+- `docs/control-hub-architecture.md`: approach comparison and chosen structure.
 - `ops/linear-seed-backlog.csv`: ready-to-use objective backlog template.
 - `ops/linear-seed-backlog.json`: machine-readable backlog for automation.
 - `ops/seed_linear_issues.sh`: seed Linear issues from JSON via API key.
