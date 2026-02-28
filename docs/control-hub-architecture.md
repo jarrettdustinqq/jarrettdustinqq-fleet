@@ -74,3 +74,22 @@ The Control Hub follows a five-stage loop:
 3. Timeboxing: weekly focus plans generated from priorities and drift.
 4. Cross-machine sync: optional remote SQLite replication or export snapshots.
 
+## Internet-Backed Structure Notes
+
+Additional structure guidance was reviewed against upstream docs:
+
+1. Local-first SQLite with WAL stays the default baseline.
+   Why: SQLite WAL supports concurrent readers with a writer and is robust for local app state snapshots.
+   Source: https://www.sqlite.org/wal.html
+2. Keep dashboard server scoped to localhost unless explicitly proxied.
+   Why: Python `http.server` is convenient for local tooling but not intended as a hardened internet-facing server.
+   Source: https://docs.python.org/3/library/http.server.html
+3. Prefer systemd timers for recurring inventory refreshes over ad-hoc cron wrappers.
+   Why: timer units support persistence and randomized delays, improving resilience after downtime and reducing burst contention.
+   Source: https://man7.org/linux/man-pages/man5/systemd.timer.5.html
+
+Practical result in this repo:
+
+- Keep Control Hub local-first and dependency-light.
+- Use timer-driven collectors (`chat-agent-timer`, `venture-agent-timer`) for periodic refresh.
+- Add an orchestrator (`mission-control`) to run collectors + dashboard as one operator entrypoint.

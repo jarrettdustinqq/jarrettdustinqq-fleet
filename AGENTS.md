@@ -40,3 +40,7 @@ Keep `fleet` as a low-friction control plane for:
 - Include only related files per commit.
 - Leave repo in a clean state (`git status` empty).
 
+
+## Inherit Global Jarrett Prime Protocol
+- This project must inherit and apply the global protocol defined at /home/jarrettdustinqq/AGENTS.md.
+- If local instructions and global protocol differ, follow higher-priority system/developer policy first, then apply the global protocol.

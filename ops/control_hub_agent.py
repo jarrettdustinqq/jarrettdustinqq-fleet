@@ -42,6 +42,9 @@ DEFAULT_OCR_MAX_CHARS = 1200
 DEFAULT_MODE_AGENT_NAME = "mode-efficiency-agent"
 DEFAULT_CODEX_CONFIG = Path.home() / ".codex" / "config.toml"
 DEFAULT_MODE_STABILITY_THRESHOLD = 2
+DEFAULT_STATE_DIR = Path.home() / ".local" / "share" / APP_NAME
+DEFAULT_CHAT_WORK_JSON = DEFAULT_STATE_DIR / "chat_work_brief.json"
+DEFAULT_VENTURE_REPORT_JSON = DEFAULT_STATE_DIR / "venture_autonomy_report.json"
 
 
 def now_utc_iso() -> str:
@@ -1605,6 +1608,218 @@ def scan_linear_tasks(
     return count
 
 
+def load_json_object(path: Path) -> tuple[dict[str, Any] | None, str]:
+    if not path.exists():
+        return None, f"missing: {path}"
+    try:
+        raw = path.read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as exc:
+        return None, f"error: {exc}"
+    if not isinstance(data, dict):
+        return None, f"error: top-level JSON must be object ({path})"
+    return data, "ok"
+
+
+def normalize_priority(score: Any, *, default: int = 3) -> int:
+    try:
+        value = float(score)
+    except (TypeError, ValueError):
+        return default
+    if value >= 150:
+        return 1
+    if value >= 100:
+        return 2
+    if value >= 70:
+        return 3
+    return 4
+
+
+def to_iso_from_unix(ts: Any, fallback: str) -> str:
+    try:
+        value = float(ts)
+        return datetime.fromtimestamp(value, tz=timezone.utc).replace(microsecond=0).isoformat()
+    except (TypeError, ValueError, OSError, OverflowError):
+        return fallback
+
+
+def upsert_generated_tasks(
+    conn: sqlite3.Connection,
+    *,
+    source: str,
+    rows: list[dict[str, Any]],
+) -> int:
+    kept: list[str] = []
+    for row in rows:
+        ext_id = str(row.get("external_id", "")).strip()
+        if not ext_id:
+            continue
+        kept.append(ext_id)
+        conn.execute(
+            """
+            INSERT INTO tasks (
+              source, external_id, title, status, priority, assignee, url, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source, external_id) DO UPDATE SET
+              title = excluded.title,
+              status = excluded.status,
+              priority = excluded.priority,
+              assignee = excluded.assignee,
+              url = excluded.url,
+              updated_at = excluded.updated_at
+            """,
+            (
+                source,
+                ext_id,
+                row.get("title") or "(untitled)",
+                row.get("status") or "",
+                int(row.get("priority") or 3),
+                row.get("assignee") or "",
+                row.get("url"),
+                row.get("updated_at") or now_utc_iso(),
+            ),
+        )
+
+    # Keep generated task sources in sync with latest report payloads.
+    if kept:
+        placeholders = ",".join("?" for _ in kept)
+        conn.execute(
+            f"DELETE FROM tasks WHERE source = ? AND external_id NOT IN ({placeholders})",
+            [source, *kept],
+        )
+    else:
+        conn.execute("DELETE FROM tasks WHERE source = ?", (source,))
+
+    return len(kept)
+
+
+def scan_chat_workstream_tasks(conn: sqlite3.Connection, report_path: Path) -> tuple[int, str]:
+    payload, status = load_json_object(report_path)
+    if payload is None:
+        return 0, status
+
+    generated_at = str(payload.get("generated_at") or now_utc_iso())
+    recs = payload.get("recommendations")
+    topic_hints: dict[str, str] = {}
+    if isinstance(recs, list):
+        for rec in recs:
+            if not isinstance(rec, dict):
+                continue
+            topic = str(rec.get("topic") or "").strip().lower()
+            why_now = str(rec.get("why_now") or "").strip()
+            if topic and why_now and topic not in topic_hints:
+                topic_hints[topic] = why_now
+
+    rows: list[dict[str, Any]] = []
+    workstreams = payload.get("workstreams")
+    if isinstance(workstreams, list):
+        for idx, stream in enumerate(workstreams):
+            if not isinstance(stream, dict):
+                continue
+            topic = str(stream.get("topic") or f"stream-{idx + 1}").strip()
+            if not topic:
+                topic = f"stream-{idx + 1}"
+            latest_title = str(stream.get("latest_title") or topic).strip()
+            thread_count = int(stream.get("thread_count") or 0)
+            blocked_signals = int(stream.get("blocked_signals") or 0)
+            done_signals = int(stream.get("done_signals") or 0)
+            hint = topic_hints.get(topic.lower()) or "Review latest thread and close one open loop."
+            status_bits = [
+                "blocked" if blocked_signals > 0 else "active",
+                f"threads={thread_count}",
+            ]
+            if done_signals > 0:
+                status_bits.append(f"done-signals={done_signals}")
+            status_bits.append(f"next={hint[:100]}")
+
+            rows.append(
+                {
+                    "external_id": topic,
+                    "title": f"[{topic}] {latest_title}"[:220],
+                    "status": " | ".join(status_bits),
+                    "priority": normalize_priority(stream.get("priority_score")),
+                    "assignee": "chat-agent",
+                    "url": None,
+                    "updated_at": to_iso_from_unix(stream.get("latest_updated_at"), generated_at),
+                }
+            )
+
+    count = upsert_generated_tasks(conn, source="chat-workstream", rows=rows)
+    return count, "ok"
+
+
+def scan_venture_repo_tasks(conn: sqlite3.Connection, report_path: Path) -> tuple[int, str]:
+    payload, status = load_json_object(report_path)
+    if payload is None:
+        return 0, status
+
+    generated_at = str(payload.get("generated_at") or now_utc_iso())
+    rows: list[dict[str, Any]] = []
+    repos = payload.get("repos")
+    if isinstance(repos, list):
+        for idx, repo in enumerate(repos):
+            if not isinstance(repo, dict):
+                continue
+            root = str(repo.get("root") or f"repo-{idx + 1}").strip()
+            if not root:
+                root = f"repo-{idx + 1}"
+            name = str(repo.get("name") or root).strip()
+            score = int(repo.get("score") or 0)
+            dirty = bool(repo.get("dirty"))
+            gaps = [str(g).strip() for g in (repo.get("gaps") or []) if str(g).strip()]
+            check_results = repo.get("check_results") or []
+            failing_commands: list[str] = []
+            if isinstance(check_results, list):
+                for result in check_results:
+                    if not isinstance(result, dict):
+                        continue
+                    if str(result.get("status") or "").lower() != "pass":
+                        cmd = str(result.get("command") or "").strip()
+                        if cmd:
+                            failing_commands.append(cmd)
+
+            status_flags: list[str] = []
+            if failing_commands:
+                status_flags.append("failing-check")
+            if dirty:
+                status_flags.append("dirty")
+            if gaps:
+                status_flags.append(f"gaps={len(gaps)}")
+            if not status_flags:
+                status_flags.append("healthy")
+
+            if failing_commands:
+                hint = f"Fix check: {failing_commands[0]}"
+                priority = 1
+            elif dirty:
+                hint = "Stabilize working tree and rerun safe checks."
+                priority = 2
+            elif gaps:
+                hint = f"Close gap: {gaps[0]}"
+                priority = 2
+            else:
+                checks = repo.get("safe_checks") or []
+                next_check = str(checks[0]).strip() if isinstance(checks, list) and checks else "No check listed"
+                hint = f"Maintain pass state ({next_check})"
+                priority = 4
+
+            rows.append(
+                {
+                    "external_id": root,
+                    "title": f"[{name}] Repo autonomy score {score}",
+                    "status": f"{'/'.join(status_flags)} | next={hint[:100]}",
+                    "priority": priority,
+                    "assignee": "venture-agent",
+                    "url": None,
+                    "updated_at": generated_at,
+                }
+            )
+
+    count = upsert_generated_tasks(conn, source="venture-repo", rows=rows)
+    return count, "ok"
+
+
 @dataclass
 class Recommendation:
     category: str
@@ -1622,6 +1837,11 @@ def generate_recommendations(
     repos: list[RepoSnapshot],
     linear_task_count: int,
     projects_root: Path,
+    *,
+    chat_workstream_count: int,
+    venture_repo_count: int,
+    chat_status: str,
+    venture_status: str,
 ) -> list[Recommendation]:
     recs: list[Recommendation] = []
 
@@ -1674,6 +1894,46 @@ def generate_recommendations(
                 category="execution",
                 title="No open Linear tasks imported",
                 details="Set LINEAR_API_KEY and optionally LINEAR_TEAM_ID before scanning so active issues appear in the dashboard.",
+                priority=1,
+            )
+        )
+
+    if chat_workstream_count == 0:
+        recs.append(
+            Recommendation(
+                category="inventory",
+                title="Chat workstreams not loaded into dashboard",
+                details="Run `./fleetctl chat-agent` or `./fleetctl mission-control` to refresh active chat inventory.",
+                priority=2,
+            )
+        )
+
+    if venture_repo_count == 0:
+        recs.append(
+            Recommendation(
+                category="inventory",
+                title="Venture repo inventory not loaded into dashboard",
+                details="Run `./fleetctl venture-agent` or `./fleetctl mission-control` to include repo autonomy signals.",
+                priority=2,
+            )
+        )
+
+    if chat_status.startswith("error"):
+        recs.append(
+            Recommendation(
+                category="inventory",
+                title="Chat workstream report parse error",
+                details=f"Latest chat report could not be parsed ({chat_status}). Re-run `./fleetctl chat-agent`.",
+                priority=1,
+            )
+        )
+
+    if venture_status.startswith("error"):
+        recs.append(
+            Recommendation(
+                category="inventory",
+                title="Venture autonomy report parse error",
+                details=f"Latest venture report could not be parsed ({venture_status}). Re-run `./fleetctl venture-agent`.",
                 priority=1,
             )
         )
@@ -1741,7 +2001,14 @@ def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
     )
 
 
-def run_scan(db_path: Path, projects_root: Path, linear_team_id: str | None) -> dict[str, int]:
+def run_scan(
+    db_path: Path,
+    projects_root: Path,
+    linear_team_id: str | None,
+    *,
+    chat_work_json: Path = DEFAULT_CHAT_WORK_JSON,
+    venture_report_json: Path = DEFAULT_VENTURE_REPORT_JSON,
+) -> dict[str, int]:
     conn = db_connect(db_path)
     init_db(conn)
 
@@ -1762,7 +2029,25 @@ def run_scan(db_path: Path, projects_root: Path, linear_team_id: str | None) -> 
     else:
         set_meta(conn, "last_linear_scan_status", "skipped: LINEAR_API_KEY missing")
 
-    recs = generate_recommendations(snapshots, linear_task_count, projects_root)
+    chat_workstream_count, chat_status = scan_chat_workstream_tasks(conn, chat_work_json)
+    set_meta(conn, "last_chat_inventory_status", chat_status)
+    set_meta(conn, "last_chat_inventory_count", str(chat_workstream_count))
+    set_meta(conn, "last_chat_inventory_path", str(chat_work_json))
+
+    venture_repo_count, venture_status = scan_venture_repo_tasks(conn, venture_report_json)
+    set_meta(conn, "last_venture_inventory_status", venture_status)
+    set_meta(conn, "last_venture_inventory_count", str(venture_repo_count))
+    set_meta(conn, "last_venture_inventory_path", str(venture_report_json))
+
+    recs = generate_recommendations(
+        snapshots,
+        linear_task_count,
+        projects_root,
+        chat_workstream_count=chat_workstream_count,
+        venture_repo_count=venture_repo_count,
+        chat_status=chat_status,
+        venture_status=venture_status,
+    )
     sync_recommendations(conn, recs)
 
     set_meta(conn, "last_scan_at", now_utc_iso())
@@ -1774,6 +2059,8 @@ def run_scan(db_path: Path, projects_root: Path, linear_team_id: str | None) -> 
         "repos": len(snapshots),
         "dirty_repos": len([s for s in snapshots if s.dirty]),
         "linear_tasks": linear_task_count,
+        "chat_workstreams": chat_workstream_count,
+        "venture_repos": venture_repo_count,
         "recommendations": len(recs),
     }
 
@@ -2135,6 +2422,8 @@ def render_dashboard(state: dict[str, Any]) -> str:
     <div class="meta">
       Last scan: {esc(meta.get("last_scan_at", "never"))}
       | Linear scan: {esc(meta.get("last_linear_scan_status", "unknown"))}
+      | Chat inventory: {esc(meta.get("last_chat_inventory_status", "unknown"))} ({esc(meta.get("last_chat_inventory_count", "0"))})
+      | Venture inventory: {esc(meta.get("last_venture_inventory_status", "unknown"))} ({esc(meta.get("last_venture_inventory_count", "0"))})
       | Window tracking: {esc(meta.get("window_tracking_status", "unknown"))}
       | Backend: {esc(meta.get("window_tracking_backend", "n/a"))}
       | Scope: {esc(meta.get("window_tracking_scope", "active-window"))}
@@ -2148,13 +2437,13 @@ def render_dashboard(state: dict[str, Any]) -> str:
     <div class="toolbar">
       <form method="post" action="/scan"><button type="submit">Rescan Now</button></form>
       <span class="small">
-        Auto-refresh every 4s. Tip: export <code>LINEAR_API_KEY</code> and <code>LINEAR_TEAM_ID</code> before rescanning for richer task inventory.
+        Auto-refresh every 4s. Tip: run <code>./fleetctl mission-control</code> for full chat+venture+hub inventory, and export <code>LINEAR_API_KEY</code>/<code>LINEAR_TEAM_ID</code> for richer task sync.
       </span>
     </div>
     <div class="grid">
       <div class="card"><div class="k">Repositories</div><div class="v">{len(repos)}</div></div>
       <div class="card"><div class="k">Dirty Repositories</div><div class="v">{len(dirty_repos)}</div></div>
-      <div class="card"><div class="k">Open Tasks</div><div class="v">{len(open_tasks)}</div></div>
+      <div class="card"><div class="k">Open Tasks/Streams</div><div class="v">{len(open_tasks)}</div></div>
       <div class="card"><div class="k">Open Recommendations</div><div class="v">{len(recs)}</div></div>
       <div class="card"><div class="k">Window Events</div><div class="v">{len(window_events)}</div></div>
       <div class="card"><div class="k">Tracked Agendas</div><div class="v">{len(agendas)}</div></div>
@@ -2233,7 +2522,7 @@ def render_dashboard(state: dict[str, Any]) -> str:
     </section>
 
     <section>
-      <h2>Tasks (Linear + local)</h2>
+      <h2>Tasks & Workstreams (Linear + chat + venture)</h2>
       <table>
         <thead>
           <tr>
@@ -2268,6 +2557,8 @@ class HubHandler(BaseHTTPRequestHandler):
     projects_root: Path
     linear_team_id: str | None
     codex_config_path: Path
+    chat_work_json: Path
+    venture_report_json: Path
 
     def _conn(self) -> sqlite3.Connection:
         conn = db_connect(self.db_path)
@@ -2302,7 +2593,13 @@ class HubHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         if self.path == "/scan":
-            run_scan(self.db_path, self.projects_root, self.linear_team_id)
+            run_scan(
+                self.db_path,
+                self.projects_root,
+                self.linear_team_id,
+                chat_work_json=self.chat_work_json,
+                venture_report_json=self.venture_report_json,
+            )
             self._redirect("/")
             return
 
@@ -2362,7 +2659,13 @@ class HubHandler(BaseHTTPRequestHandler):
 
 
 def cmd_scan(args: argparse.Namespace) -> int:
-    summary = run_scan(args.db, args.projects_root, args.linear_team_id)
+    summary = run_scan(
+        args.db,
+        args.projects_root,
+        args.linear_team_id,
+        chat_work_json=args.chat_work_json,
+        venture_report_json=args.venture_report_json,
+    )
     print(json.dumps(summary, indent=2))
     return 0
 
@@ -2387,12 +2690,20 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
     if args.scan_first:
         log_startup("scan-first enabled: starting inventory scan")
-        summary = run_scan(args.db, args.projects_root, args.linear_team_id)
+        summary = run_scan(
+            args.db,
+            args.projects_root,
+            args.linear_team_id,
+            chat_work_json=args.chat_work_json,
+            venture_report_json=args.venture_report_json,
+        )
         log_startup(
             "scan complete: "
             f"repos={summary.get('repos', 0)} "
             f"dirty_repos={summary.get('dirty_repos', 0)} "
             f"linear_tasks={summary.get('linear_tasks', 0)} "
+            f"chat_workstreams={summary.get('chat_workstreams', 0)} "
+            f"venture_repos={summary.get('venture_repos', 0)} "
             f"recommendations={summary.get('recommendations', 0)}"
         )
 
@@ -2447,6 +2758,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
     HubHandler.projects_root = args.projects_root
     HubHandler.linear_team_id = args.linear_team_id
     HubHandler.codex_config_path = args.codex_config
+    HubHandler.chat_work_json = args.chat_work_json
+    HubHandler.venture_report_json = args.venture_report_json
 
     try:
         server = ThreadingHTTPServer((args.host, args.port), HubHandler)
@@ -2504,6 +2817,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--linear-team-id",
         default=os.environ.get("LINEAR_TEAM_ID"),
         help="Optional Linear team ID filter. Defaults to LINEAR_TEAM_ID env.",
+    )
+    p.add_argument(
+        "--chat-work-json",
+        type=Path,
+        default=DEFAULT_CHAT_WORK_JSON,
+        help=f"Chat workstream report path (default: {DEFAULT_CHAT_WORK_JSON}).",
+    )
+    p.add_argument(
+        "--venture-report-json",
+        type=Path,
+        default=DEFAULT_VENTURE_REPORT_JSON,
+        help=f"Venture autonomy report path (default: {DEFAULT_VENTURE_REPORT_JSON}).",
     )
 
     sub = p.add_subparsers(dest="cmd", required=True)

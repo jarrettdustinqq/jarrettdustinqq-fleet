@@ -7,6 +7,8 @@ Local-first inventory agent + dashboard to manage active work in one place.
 - Local git repositories under `~/projects` by default.
 - Repo health: branch, dirty status, ahead/behind, last commit age, remote URL.
 - Optional Linear assigned issues (when `LINEAR_API_KEY` is set).
+- Chat workstream synthesis reports from `chat-agent` (`chat_work_brief.json`).
+- Venture autonomy repo reports from `venture-agent` (`venture_autonomy_report.json`).
 - Auto-generated recommendations (focus and cleanup actions).
 - Live active window focus with agenda title, in-window summary, last step, and next step.
 - Per-context agenda memory (browser tab/window contexts tracked over time).
@@ -28,6 +30,8 @@ Direct script usage:
 ```bash
 python3 ./ops/control_hub_agent.py scan
 python3 ./ops/control_hub_agent.py scan-serve --port 8765
+python3 ./ops/control_hub_agent.py scan --chat-work-json ~/.local/share/fleet-control-hub/chat_work_brief.json
+python3 ./ops/control_hub_agent.py scan --venture-report-json ~/.local/share/fleet-control-hub/venture_autonomy_report.json
 python3 ./ops/control_hub_agent.py scan-serve --no-window-tracking
 python3 ./ops/control_hub_agent.py scan-serve --window-poll-seconds 1.0
 python3 ./ops/control_hub_agent.py scan-serve --no-interaction-helper
@@ -74,7 +78,7 @@ When enabled, only non-completed and non-canceled assigned issues are imported.
 ## Dashboard Features
 
 - Repository table with editable `focus_level` (0-3) and `next_action`.
-- Task table with editable `done` and `notes`.
+- Task/workstream table with editable `done` and `notes` (Linear + chat + venture).
 - Recommendation table with open/done tracking.
 - Live Focus panel with agenda title, app, location, in-window summary, last step, and next step.
 - Recent Window Activity feed with per-focus agenda + step updates.
@@ -87,3 +91,11 @@ When enabled, only non-completed and non-canceled assigned issues are imported.
 - SQLite DB path:
   `~/.local/share/fleet-control-hub/control_hub.db`
 - Local-only and file-based for portability and backups.
+
+## Recommended Entry Point
+
+For a single command that refreshes chat inventory + venture inventory before launching dashboard:
+
+```bash
+./fleetctl mission-control
+```

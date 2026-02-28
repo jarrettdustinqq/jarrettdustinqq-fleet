@@ -16,6 +16,7 @@ Usage:
   fleetctl venture-agent [options]    Analyze repos and generate autonomy optimization queue
   fleetctl venture-agent-timer [options]
                                       Install/manage daily venture-agent timer
+  fleetctl mission-control [options]  Run chat+venture inventory, then launch unified hub
   fleetctl hub-scan                   Scan inventory into Control Hub DB
   fleetctl hub-serve                  Run scan + local Control Hub dashboard
   fleetctl shell                      Enter nix dev shell (requires nix)
@@ -52,6 +53,9 @@ case "$cmd" in
     ;;
   venture-agent-timer)
     exec "$DIR/ops/install_venture_agent_timer.sh" "$@"
+    ;;
+  mission-control)
+    exec python3 "$DIR/ops/mission_control_agent.py" "$@"
     ;;
   hub-scan)
     exec python3 "$DIR/ops/control_hub_agent.py" scan "$@"

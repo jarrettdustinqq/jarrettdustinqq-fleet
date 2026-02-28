@@ -13,6 +13,7 @@ Small bootstrap toolkit for setting up a controller/dev node quickly.
 - `./fleetctl chat-agent-timer [options]`: Install/manage hourly chat-agent snapshots.
 - `./fleetctl venture-agent [options]`: Analyze Linux code repos and generate an autonomy optimization queue.
 - `./fleetctl venture-agent-timer [options]`: Install/manage daily venture-agent runs.
+- `./fleetctl mission-control [options]`: Run chat-agent + venture-agent, then launch the unified Control Hub workflow.
 - `./fleetctl hub-scan`: Build/update local Control Hub inventory DB.
 - `./fleetctl hub-serve`: Scan + run local interactive Control Hub dashboard with startup diagnostics (scan progress, sqlite3 CLI availability, bind target failures), live tracking (Wayland: `swaymsg`/`hyprctl`, X11: `xdotool`/`xprop`), agenda last/next-step guidance, an interaction helper agent, and a mode-efficiency agent that recommends lower reasoning mode for obvious/simple tasks (manual apply button + optional auto-apply with stability threshold).
 - `./fleetctl shell`: Enter the flake dev shell (requires Nix).
@@ -61,6 +62,9 @@ Remote access agent examples:
 ./fleetctl venture-agent-timer
 ./fleetctl venture-agent-timer --status
 ./fleetctl venture-agent-timer --uninstall
+./fleetctl mission-control
+./fleetctl mission-control --venture-run-checks -- --port 8766
+./fleetctl mission-control --scan-only
 ```
 
 Tip: in interactive terminals, `--auto --discover` now shows top VPS candidates (ranked by local evidence) and lets you select by number, then runs a lightweight SSH reachability probe before proceeding.
@@ -69,6 +73,7 @@ Tip: in interactive terminals, `--auto --discover` now shows top VPS candidates 
 
 - `docs/control-plane-runbook.md`: bootstrap, operations, and incident handling.
 - `docs/control-hub-agent.md`: local inventory + dashboard usage.
+- `docs/mission-control-agent.md`: one-command orchestration for chat/venture/hub inventory.
 - `docs/control-hub-architecture.md`: approach comparison and chosen structure.
 - `docs/venture-agent.md`: repo autonomy scoring and optimization queue generation.
 - `ops/linear-seed-backlog.csv`: ready-to-use objective backlog template.
