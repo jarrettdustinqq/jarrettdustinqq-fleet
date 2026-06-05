@@ -1,6 +1,27 @@
-# Add one git URL per line. Example:
-# https://github.com/your-org/continuity-master-plan.git
-# git@github.com:your-org/phantom-shell.git
-https://github.com/jarrettdustinqq/continuity-master-plan.git
+# Controller bootstrap repo list.
+# Source of truth: jarrettdustinqq/continuity:repo-registry.json
+#
+# Include canonical, support, and app-surface repos needed on the controller node.
+# Archive and obsolete repos are listed below as comments so agents do not treat
+# them as active production inputs.
+
+# canonical
+https://github.com/jarrettdustinqq/continuity.git
 https://github.com/jarrettdustinqq/phantom-shell.git
-https://github.com/jarrettdustinqq/minimal-showcase.git
+
+# support
+https://github.com/jarrettdustinqq/jarrettdustinqq-fleet.git
+https://github.com/jarrettdustinqq/continuity-spine.git
+https://github.com/jarrettdustinqq/ledger-witness-offsite.git
+https://github.com/jarrettdustinqq/phantom-shell-dr-vault.git
+
+# app-surface
+https://github.com/jarrettdustinqq/aistudio.git
+
+# archive / legacy — intentionally not bootstrapped by default
+# https://github.com/jarrettdustinqq/continuity-master-plan.git
+# https://github.com/jarrettdustinqq/minimal-showcase.git
+
+# obsolete / placeholders — intentionally not bootstrapped by default
+# https://github.com/jarrettdustinqq/aether.git
+# https://github.com/jarrettdustinqq/aetheros.git
