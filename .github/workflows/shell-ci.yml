@@ -32,3 +32,6 @@ jobs:
 
       - name: Python syntax
         run: python3 -m py_compile ops/control_hub_agent.py
+
+      - name: Python tests
+        run: python3 -m unittest discover -s tests -p 'test_*.py' -v
