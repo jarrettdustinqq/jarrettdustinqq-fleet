@@ -26,6 +26,35 @@ load_nix_env_if_present() {
   fi
 }
 
+github_https_auth_available() {
+  local protocol
+
+  command -v gh >/dev/null 2>&1 || return 1
+  protocol="$(
+    GH_PROMPT_DISABLED=1 GIT_TERMINAL_PROMPT=0 \
+      gh config get git_protocol --host github.com 2>/dev/null
+  )" || return 1
+  [ "$protocol" = "https" ] || return 1
+
+  GH_PROMPT_DISABLED=1 GIT_TERMINAL_PROMPT=0 \
+    gh auth status --hostname github.com >/dev/null 2>&1
+}
+
+check_github_auth() {
+  if [ -f "$SSH_KEY_PATH" ] && [ -f "${SSH_KEY_PATH}.pub" ]; then
+    ok "GitHub auth available: SSH keypair at $SSH_KEY_PATH"
+    return 0
+  fi
+
+  if github_https_auth_available; then
+    ok "GitHub auth available: authenticated gh CLI over HTTPS"
+    return 0
+  fi
+
+  warn "GitHub auth unavailable: no complete SSH keypair at $SSH_KEY_PATH and no authenticated gh CLI over HTTPS"
+  return 1
+}
+
 main() {
   local rc=0
 
@@ -41,12 +70,7 @@ main() {
     rc=1
   fi
 
-  if [ -f "$SSH_KEY_PATH" ] && [ -f "${SSH_KEY_PATH}.pub" ]; then
-    ok "SSH key exists: $SSH_KEY_PATH"
-  else
-    warn "SSH key missing: $SSH_KEY_PATH"
-    rc=1
-  fi
+  check_github_auth || rc=1
 
   if [ -d "$PROJECTS_DIR" ]; then
     ok "projects dir exists: $PROJECTS_DIR"

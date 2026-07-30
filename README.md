@@ -23,11 +23,30 @@ Small bootstrap toolkit for setting up a controller/dev node quickly.
 If `bootstrap` is run without arguments, repo URLs are loaded from `repos.txt`
 (one URL per line, comments allowed with `#`).
 
+## Health Configuration
+
+`./fleetctl health` accepts these environment overrides:
+
+- `PROJECTS_DIR` (default: `$HOME/projects`): directory containing managed repositories.
+- `SSH_KEY_PATH` (default: `$HOME/.ssh/id_ed25519`): SSH private-key path; the matching `.pub` file must also exist.
+
+GitHub authentication passes when either a complete SSH keypair exists or the
+GitHub CLI is authenticated for `github.com` and configured for HTTPS. The CLI
+check is noninteractive and suppresses authentication output.
+
+Example using an existing workspace:
+
+```bash
+PROJECTS_DIR="$HOME/agent_workspace" ./fleetctl health
+```
+
 ## Local Validation
 
 ```bash
-bash -n bootstrap.sh healthcheck.sh install_nix.sh fleetctl
-shellcheck bootstrap.sh healthcheck.sh install_nix.sh fleetctl
+bash -n bootstrap.sh healthcheck.sh install_nix.sh fleetctl ops/seed_linear_issues.sh tests/test_healthcheck.sh
+shellcheck bootstrap.sh healthcheck.sh install_nix.sh fleetctl ops/seed_linear_issues.sh tests/test_healthcheck.sh
+bash tests/test_healthcheck.sh
+python3 -m py_compile ops/control_hub_agent.py
 ```
 
 Remote access agent examples:

@@ -14,6 +14,10 @@ GitHub and Linear.
 - Execution tracking: Linear project/issue workflow.
 - Optional knowledge layer: Notion page mirrored from this runbook.
 
+Existing controllers can point health checks at another workspace without
+moving repositories by setting `PROJECTS_DIR`, for example:
+`PROJECTS_DIR="$HOME/agent_workspace" fleetctl health`.
+
 ## Bootstrap Procedure
 
 1. Update host packages.
@@ -25,9 +29,9 @@ GitHub and Linear.
 
 ```bash
 sudo apt-get update && sudo apt-get upgrade -y && sudo apt-get autoremove -y
-/home/jarrettdustinqq/fleet/fleetctl install-nix
-/home/jarrettdustinqq/fleet/fleetctl bootstrap
-/home/jarrettdustinqq/fleet/fleetctl health
+/home/jarrettdustinqq/agent_workspace/jarrettdustinqq-fleet/fleetctl install-nix
+/home/jarrettdustinqq/agent_workspace/jarrettdustinqq-fleet/fleetctl bootstrap
+/home/jarrettdustinqq/agent_workspace/jarrettdustinqq-fleet/fleetctl health
 ```
 
 ## Daily Operations
@@ -59,11 +63,20 @@ sudo apt-get update && sudo apt-get upgrade -y && sudo apt-get autoremove -y
 
 ### GitHub auth failure
 
-1. Print public key:
-   `cat ~/.ssh/id_ed25519.pub`
-2. Ensure key exists in GitHub SSH settings.
-3. Test:
-   `ssh -T git@github.com`
+Fleet health accepts either HTTPS authentication through GitHub CLI or a
+complete SSH keypair.
+
+For HTTPS:
+
+1. Authenticate: `gh auth login --hostname github.com --git-protocol https --web`.
+2. Verify: `gh auth status --hostname github.com`.
+3. Confirm the protocol: `gh config get git_protocol --host github.com`.
+
+For SSH:
+
+1. Print the public key: `cat ~/.ssh/id_ed25519.pub`.
+2. Ensure the key exists in GitHub SSH settings.
+3. Test: `ssh -T git@github.com`.
 
 ### Repo sync failure
 
@@ -81,6 +94,5 @@ sudo apt-get update && sudo apt-get upgrade -y && sudo apt-get autoremove -y
 
 1. Copy `fleet/` directory to the machine.
 2. Run bootstrap procedure in order.
-3. Add SSH key to GitHub.
+3. Configure GitHub HTTPS authentication or add the SSH key to GitHub.
 4. Validate all repos cloned under `~/projects`.
-
