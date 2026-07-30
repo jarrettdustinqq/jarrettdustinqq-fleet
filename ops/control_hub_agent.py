@@ -286,16 +286,14 @@ def find_git_repos(projects_root: Path) -> list[Path]:
     if not projects_root.exists():
         return repos
 
-    for root, dirs, _files in os.walk(projects_root):
+    skip = {".git", ".cache", "node_modules", ".venv", "venv"}
+    for root, dirs, files in os.walk(projects_root):
         root_path = Path(root)
-        if ".git" in dirs:
+        if ".git" in dirs or ".git" in files:
             repos.append(root_path)
-            # Do not descend into nested folders inside a git repository.
-            dirs[:] = []
-            continue
 
-        # Skip heavy directories when not in a repo yet.
-        skip = {".cache", "node_modules", ".venv", "venv"}
+        # Traverse ordinary directories so repository roots can contain
+        # nested repositories, while pruning metadata and heavy paths.
         dirs[:] = [d for d in dirs if d not in skip]
 
     return sorted(repos)
