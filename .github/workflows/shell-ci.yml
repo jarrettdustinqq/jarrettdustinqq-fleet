@@ -25,10 +25,13 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y shellcheck
 
       - name: Bash syntax
-        run: bash -n bootstrap.sh healthcheck.sh install_nix.sh fleetctl
+        run: bash -n bootstrap.sh healthcheck.sh install_nix.sh fleetctl ops/seed_linear_issues.sh tests/test_healthcheck.sh
 
       - name: ShellCheck
-        run: shellcheck bootstrap.sh healthcheck.sh install_nix.sh fleetctl
+        run: shellcheck bootstrap.sh healthcheck.sh install_nix.sh fleetctl ops/seed_linear_issues.sh tests/test_healthcheck.sh
+
+      - name: Healthcheck tests
+        run: bash tests/test_healthcheck.sh
 
       - name: Python syntax
         run: python3 -m py_compile ops/control_hub_agent.py ops/control_hub_safe_entry.py ops/mission_control_agent.py
