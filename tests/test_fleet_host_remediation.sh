@@ -67,7 +67,7 @@ git -C "$FLEET" commit -qm init
 FLEET_ALLOW_OTHER_USER=1 \
 FLEET_USER_HOME="$HOME_DIR" \
 FLEET_EXPECTED_USER="$(id -un)" \
-  "$SCRIPT" \
+  bash "$SCRIPT" \
     --quick \
     --no-fetch \
     --output-root "$OUT_ROOT" \
