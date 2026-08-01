@@ -24,6 +24,9 @@ jobs:
       - name: Install ShellCheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
 
+      - name: Normalize shell modes
+        run: chmod +x ops/fleet_host_remediation.sh tests/test_fleet_host_remediation.sh
+
       - name: Bash syntax
         run: bash -n bootstrap.sh healthcheck.sh install_nix.sh fleetctl ops/seed_linear_issues.sh ops/fleet_host_remediation.sh tests/test_healthcheck.sh tests/test_fleet_host_remediation.sh
 
