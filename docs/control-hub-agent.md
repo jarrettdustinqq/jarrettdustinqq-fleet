@@ -21,28 +21,44 @@ Local-first inventory agent + dashboard to manage active work in one place.
 # scan and print summary JSON
 ./fleetctl hub-scan
 
+# select an explicit inventory root and database
+./fleetctl hub-scan \
+  --projects-root "$HOME/agent_workspace" \
+  --db "$HOME/.local/share/fleet-control-hub/control_hub.db"
+
 # scan then start local dashboard at http://127.0.0.1:8765
-./fleetctl hub-serve
+./fleetctl hub-serve --projects-root "$HOME/agent_workspace"
 ```
 
-Direct script usage:
+`hub-scan` and `hub-serve` route through `ops/control_hub_safe_entry.py`.
+Before opening the database, the guarded entry point verifies that the selected
+projects root exists, is a searchable directory, and is not the filesystem root.
+If validation fails, the command exits with status `2` without opening or pruning
+the existing database.
+
+Direct guarded usage:
 
 ```bash
-python3 ./ops/control_hub_agent.py scan
-python3 ./ops/control_hub_agent.py scan-serve --port 8765
-python3 ./ops/control_hub_agent.py scan --chat-work-json ~/.local/share/fleet-control-hub/chat_work_brief.json
-python3 ./ops/control_hub_agent.py scan --venture-report-json ~/.local/share/fleet-control-hub/venture_autonomy_report.json
-python3 ./ops/control_hub_agent.py scan-serve --no-window-tracking
-python3 ./ops/control_hub_agent.py scan-serve --window-poll-seconds 1.0
-python3 ./ops/control_hub_agent.py scan-serve --no-interaction-helper
-python3 ./ops/control_hub_agent.py scan-serve --no-window-ocr
-python3 ./ops/control_hub_agent.py scan-serve --ocr-max-chars 1800
-python3 ./ops/control_hub_agent.py scan-serve --port 8766
-python3 ./ops/control_hub_agent.py scan-serve --no-mode-efficiency-agent
-python3 ./ops/control_hub_agent.py scan-serve --auto-apply-reasoning-mode
-python3 ./ops/control_hub_agent.py scan-serve --codex-config ~/.codex/config.toml
-python3 ./ops/control_hub_agent.py scan-serve --auto-apply-reasoning-mode --mode-stability-threshold 2
+python3 ./ops/control_hub_safe_entry.py scan
+python3 ./ops/control_hub_safe_entry.py scan --projects-root "$HOME/agent_workspace"
+python3 ./ops/control_hub_safe_entry.py scan-serve --port 8765
+python3 ./ops/control_hub_safe_entry.py scan --chat-work-json ~/.local/share/fleet-control-hub/chat_work_brief.json
+python3 ./ops/control_hub_safe_entry.py scan --venture-report-json ~/.local/share/fleet-control-hub/venture_autonomy_report.json
+python3 ./ops/control_hub_safe_entry.py scan-serve --no-window-tracking
+python3 ./ops/control_hub_safe_entry.py scan-serve --window-poll-seconds 1.0
+python3 ./ops/control_hub_safe_entry.py scan-serve --no-interaction-helper
+python3 ./ops/control_hub_safe_entry.py scan-serve --no-window-ocr
+python3 ./ops/control_hub_safe_entry.py scan-serve --ocr-max-chars 1800
+python3 ./ops/control_hub_safe_entry.py scan-serve --port 8766
+python3 ./ops/control_hub_safe_entry.py scan-serve --no-mode-efficiency-agent
+python3 ./ops/control_hub_safe_entry.py scan-serve --auto-apply-reasoning-mode
+python3 ./ops/control_hub_safe_entry.py scan-serve --codex-config ~/.codex/config.toml
+python3 ./ops/control_hub_safe_entry.py scan-serve --auto-apply-reasoning-mode --mode-stability-threshold 2
 ```
+
+The legacy `ops/control_hub_agent.py` entry point remains available for internal
+implementation and compatibility, but operator-facing commands should use the
+guarded entry point.
 
 Window tracking notes:
 
@@ -91,6 +107,9 @@ When enabled, only non-completed and non-canceled assigned issues are imported.
 - SQLite DB path:
   `~/.local/share/fleet-control-hub/control_hub.db`
 - Local-only and file-based for portability and backups.
+- The current database schema is an operational projection, not the canonical
+  cross-project source of truth. Durable project and workstream state belongs in
+  `jarrettdustinqq/continuity`.
 
 ## Recommended Entry Point
 
