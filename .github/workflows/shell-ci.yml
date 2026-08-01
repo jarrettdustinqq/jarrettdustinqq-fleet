@@ -24,14 +24,20 @@ jobs:
       - name: Install ShellCheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
 
+      - name: Normalize shell modes
+        run: chmod +x ops/fleet_host_remediation.sh tests/test_fleet_host_remediation.sh
+
       - name: Bash syntax
-        run: bash -n bootstrap.sh healthcheck.sh install_nix.sh fleetctl ops/seed_linear_issues.sh tests/test_healthcheck.sh
+        run: bash -n bootstrap.sh healthcheck.sh install_nix.sh fleetctl ops/seed_linear_issues.sh ops/fleet_host_remediation.sh tests/test_healthcheck.sh tests/test_fleet_host_remediation.sh
 
       - name: ShellCheck
-        run: shellcheck bootstrap.sh healthcheck.sh install_nix.sh fleetctl ops/seed_linear_issues.sh tests/test_healthcheck.sh
+        run: shellcheck bootstrap.sh healthcheck.sh install_nix.sh fleetctl ops/seed_linear_issues.sh ops/fleet_host_remediation.sh tests/test_healthcheck.sh tests/test_fleet_host_remediation.sh
 
       - name: Healthcheck tests
         run: bash tests/test_healthcheck.sh
+
+      - name: Host remediation tests
+        run: bash tests/test_fleet_host_remediation.sh
 
       - name: Python syntax
         run: python3 -m py_compile ops/control_hub_agent.py ops/control_hub_safe_entry.py ops/mission_control_agent.py

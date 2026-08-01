@@ -4,13 +4,14 @@ set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
-  cat <<'EOF'
+  cat <<'USAGE'
 Usage:
   fleetctl install-nix                Install Nix in user mode
   fleetctl bootstrap [repo_url ...]   Create SSH key, clone/update repos
   fleetctl health                     Run local controller health checks
+  fleetctl host-audit [options]       Create reversible host evidence and Git backup
   fleetctl remote-agent [options]     Handle SSH key + GitHub/VPS auth checks
-  fleetctl vps-discover [options]     Find likely VPS SSH targets from local context
+  fleetctl vps-discover [options]     Find likely VPS targets from local context
   fleetctl chat-agent [options]       Synthesize open/saved Codex chats and priorities
   fleetctl chat-agent-timer [options] Install/manage hourly chat-agent timer
   fleetctl venture-agent [options]    Analyze repos and generate autonomy optimization queue
@@ -20,7 +21,7 @@ Usage:
   fleetctl hub-scan [options]         Scan inventory into Control Hub DB
   fleetctl hub-serve [options]        Run scan + local Control Hub dashboard
   fleetctl shell                      Enter nix dev shell (requires nix)
-EOF
+USAGE
 }
 
 cmd="${1:-}"
@@ -35,6 +36,9 @@ case "$cmd" in
     ;;
   health)
     exec "$DIR/healthcheck.sh" "$@"
+    ;;
+  host-audit)
+    exec bash "$DIR/ops/fleet_host_remediation.sh" "$@"
     ;;
   remote-agent)
     exec "$DIR/ops/remote_access_agent.sh" "$@"
