@@ -52,7 +52,7 @@ case "$cmd" in
     exec python3 "$DIR/ops/venture_autonomy_agent.py" "$@"
     ;;
   venture-agent-timer)
-    exec "$DIR/ops/install_venture_autonomy_agent_timer.sh" "$@"
+    exec "$DIR/ops/install_venture_agent_timer.sh" "$@"
     ;;
   mission-control)
     exec python3 "$DIR/ops/mission_control_agent.py" "$@"
