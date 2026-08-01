@@ -31,4 +31,7 @@ jobs:
         run: shellcheck bootstrap.sh healthcheck.sh install_nix.sh fleetctl
 
       - name: Python syntax
-        run: python3 -m py_compile ops/control_hub_agent.py
+        run: python3 -m py_compile ops/control_hub_agent.py ops/control_hub_safe_entry.py ops/mission_control_agent.py
+
+      - name: Python tests
+        run: python3 -m unittest discover -s tests -p 'test_*.py' -v

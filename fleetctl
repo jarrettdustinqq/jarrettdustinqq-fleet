@@ -17,8 +17,8 @@ Usage:
   fleetctl venture-agent-timer [options]
                                       Install/manage daily venture-agent timer
   fleetctl mission-control [options]  Run chat+venture inventory, then launch unified hub
-  fleetctl hub-scan                   Scan inventory into Control Hub DB
-  fleetctl hub-serve                  Run scan + local Control Hub dashboard
+  fleetctl hub-scan [options]         Scan inventory into Control Hub DB
+  fleetctl hub-serve [options]        Run scan + local Control Hub dashboard
   fleetctl shell                      Enter nix dev shell (requires nix)
 EOF
 }
@@ -58,14 +58,14 @@ case "$cmd" in
     exec python3 "$DIR/ops/mission_control_agent.py" "$@"
     ;;
   hub-scan)
-    exec python3 "$DIR/ops/control_hub_agent.py" scan "$@"
+    exec python3 "$DIR/ops/control_hub_safe_entry.py" scan "$@"
     ;;
   hub-serve)
     if ! command -v sqlite3 >/dev/null 2>&1; then
       printf '[warn] sqlite3 not found in PATH; CLI DB checks will fail.\n' >&2
       printf "[warn] install sqlite3 to run: sqlite3 ~/.local/share/fleet-control-hub/control_hub.db '.tables'\n" >&2
     fi
-    exec python3 "$DIR/ops/control_hub_agent.py" scan-serve "$@"
+    exec python3 "$DIR/ops/control_hub_safe_entry.py" scan-serve "$@"
     ;;
   shell)
     exec nix develop "$DIR" -c "${SHELL:-bash}"
