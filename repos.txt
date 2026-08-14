@@ -11,6 +11,8 @@ https://github.com/jarrettdustinqq/phantom-shell.git
 
 # support
 https://github.com/jarrettdustinqq/jarrettdustinqq-fleet.git
+# Private supervised host-operations source; requires authenticated private-repo access.
+https://github.com/jarrettdustinqq/system-operator-agent.git
 https://github.com/jarrettdustinqq/continuity-spine.git
 https://github.com/jarrettdustinqq/ledger-witness-offsite.git
 https://github.com/jarrettdustinqq/phantom-shell-dr-vault.git
