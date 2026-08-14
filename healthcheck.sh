@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+FLEET_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECTS_DIR="${PROJECTS_DIR:-$HOME/projects}"
 SSH_KEY_PATH="${SSH_KEY_PATH:-$HOME/.ssh/id_ed25519}"
 
@@ -19,10 +20,19 @@ check_cmd() {
 }
 
 load_nix_env_if_present() {
-  # Non-interactive shells may not source ~/.profile.
   if ! command -v nix >/dev/null 2>&1 && [ -e "$HOME/.nix-profile/etc/profile.d/nix.sh" ]; then
     # shellcheck source=/dev/null
     . "$HOME/.nix-profile/etc/profile.d/nix.sh"
+  fi
+}
+
+load_repo_urls() {
+  local -n _out_arr=$1
+
+  if [ -f "$FLEET_DIR/repos.txt" ]; then
+    mapfile -t _out_arr < <(grep -vE '^[[:space:]]*(#|$)' "$FLEET_DIR/repos.txt")
+  else
+    _out_arr=()
   fi
 }
 
@@ -40,19 +50,42 @@ github_https_auth_available() {
     gh auth status --hostname github.com >/dev/null 2>&1
 }
 
-check_github_auth() {
-  if [ -f "$SSH_KEY_PATH" ] && [ -f "${SSH_KEY_PATH}.pub" ]; then
-    ok "GitHub auth available: SSH keypair at $SSH_KEY_PATH"
-    return 0
-  fi
-
+report_auth_configuration() {
   if github_https_auth_available; then
-    ok "GitHub auth available: authenticated gh CLI over HTTPS"
+    ok "GitHub CLI authenticated over HTTPS"
     return 0
   fi
 
-  warn "GitHub auth unavailable: no complete SSH keypair at $SSH_KEY_PATH and no authenticated gh CLI over HTTPS"
-  return 1
+  if [ -f "$SSH_KEY_PATH" ] && [ -f "${SSH_KEY_PATH}.pub" ]; then
+    warn "SSH keypair present at $SSH_KEY_PATH; key presence alone is not treated as proof of GitHub access"
+    return 0
+  fi
+
+  warn "No authenticated GitHub CLI HTTPS session or local SSH keypair detected; required-repository access preflight will decide health"
+}
+
+check_required_repo_access() {
+  local repos=()
+  local url
+  local rc=0
+
+  load_repo_urls repos
+  if [ "${#repos[@]}" -eq 0 ]; then
+    fail "No active repositories configured in $FLEET_DIR/repos.txt"
+    return 1
+  fi
+
+  for url in "${repos[@]}"; do
+    if GH_PROMPT_DISABLED=1 GIT_TERMINAL_PROMPT=0 \
+      git ls-remote "$url" >/dev/null 2>&1; then
+      ok "repo access: $url"
+    else
+      fail "repo access unavailable noninteractively: $url"
+      rc=1
+    fi
+  done
+
+  return "$rc"
 }
 
 main() {
@@ -60,7 +93,6 @@ main() {
 
   check_cmd git || rc=1
   check_cmd curl || rc=1
-  check_cmd ssh || rc=1
   load_nix_env_if_present
 
   if command -v nix >/dev/null 2>&1; then
@@ -70,7 +102,8 @@ main() {
     rc=1
   fi
 
-  check_github_auth || rc=1
+  report_auth_configuration
+  check_required_repo_access || rc=1
 
   if [ -d "$PROJECTS_DIR" ]; then
     ok "projects dir exists: $PROJECTS_DIR"
