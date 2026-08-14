@@ -13,7 +13,7 @@ import os
 import sys
 from http import HTTPStatus
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Sequence
 
 import control_hub_agent as hub
 
