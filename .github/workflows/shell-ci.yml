@@ -6,12 +6,14 @@ on:
       - "**.sh"
       - "**.py"
       - "fleetctl"
+      - "repos.txt"
       - ".github/workflows/shell-ci.yml"
   pull_request:
     paths:
       - "**.sh"
       - "**.py"
       - "fleetctl"
+      - "repos.txt"
       - ".github/workflows/shell-ci.yml"
 
 jobs:
@@ -28,10 +30,13 @@ jobs:
         run: chmod +x ops/fleet_host_remediation.sh tests/test_fleet_host_remediation.sh
 
       - name: Bash syntax
-        run: bash -n bootstrap.sh healthcheck.sh install_nix.sh fleetctl ops/seed_linear_issues.sh ops/fleet_host_remediation.sh tests/test_healthcheck.sh tests/test_fleet_host_remediation.sh
+        run: bash -n bootstrap.sh healthcheck.sh install_nix.sh fleetctl ops/seed_linear_issues.sh ops/fleet_host_remediation.sh tests/test_bootstrap.sh tests/test_healthcheck.sh tests/test_fleet_host_remediation.sh
 
       - name: ShellCheck
-        run: shellcheck bootstrap.sh healthcheck.sh install_nix.sh fleetctl ops/seed_linear_issues.sh ops/fleet_host_remediation.sh tests/test_healthcheck.sh tests/test_fleet_host_remediation.sh
+        run: shellcheck bootstrap.sh healthcheck.sh install_nix.sh fleetctl ops/seed_linear_issues.sh ops/fleet_host_remediation.sh tests/test_bootstrap.sh tests/test_healthcheck.sh tests/test_fleet_host_remediation.sh
+
+      - name: Bootstrap tests
+        run: bash tests/test_bootstrap.sh
 
       - name: Healthcheck tests
         run: bash tests/test_healthcheck.sh
