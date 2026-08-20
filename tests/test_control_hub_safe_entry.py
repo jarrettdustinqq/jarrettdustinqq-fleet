@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from http import HTTPStatus
 from pathlib import Path
 from unittest import mock
 
@@ -107,6 +108,62 @@ class SafeEntryGuardTests(unittest.TestCase):
             cmd_scan.assert_called_once()
             called_args = cmd_scan.call_args.args[0]
             self.assertEqual(called_args.projects_root, projects_root)
+
+    def test_guarded_run_scan_preserves_repo_state_when_root_disappears(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            missing_root = Path(tmp) / "missing"
+            db_path = Path(tmp) / "control-hub.db"
+            conn = safe_entry.hub.db_connect(db_path)
+            safe_entry.hub.init_db(conn)
+            conn.execute(
+                """
+                INSERT INTO repos (
+                    path, name, branch, dirty, ahead, behind,
+                    focus_level, next_action, updated_at
+                ) VALUES (?, ?, ?, 0, 0, 0, 3, ?, ?)
+                """,
+                (
+                    "/srv/preserved-repo",
+                    "preserved-repo",
+                    "main",
+                    "keep this operator state",
+                    "2026-08-14T12:00:00+00:00",
+                ),
+            )
+            conn.commit()
+            conn.close()
+
+            with self.assertRaises(safe_entry.ScanRefusedError):
+                safe_entry.guarded_run_scan(db_path, missing_root, None)
+
+            conn = sqlite3.connect(db_path)
+            row = conn.execute(
+                "SELECT path, focus_level, next_action FROM repos WHERE path = ?",
+                ("/srv/preserved-repo",),
+            ).fetchone()
+            conn.close()
+            self.assertEqual(
+                row,
+                ("/srv/preserved-repo", 3, "keep this operator state"),
+            )
+
+    def test_http_rescan_refuses_if_root_disappears(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            missing_root = Path(tmp) / "missing"
+            handler = object.__new__(safe_entry.SafeHubHandler)
+            handler.path = "/scan"
+            handler.projects_root = missing_root
+            handler.wfile = io.BytesIO()
+
+            with mock.patch.object(handler, "send_response") as send_response:
+                with mock.patch.object(handler, "send_header"):
+                    with mock.patch.object(handler, "end_headers"):
+                        handler.do_POST()
+
+            send_response.assert_called_once_with(HTTPStatus.SERVICE_UNAVAILABLE)
+            payload = handler.wfile.getvalue().decode("utf-8")
+            self.assertIn("scan refused", payload)
+            self.assertIn("existing database state was not opened or pruned", payload)
 
 
 class FleetctlIntegrationTests(unittest.TestCase):

@@ -2,7 +2,7 @@
 """Safe command-line entry point for Fleet Control Hub operations.
 
 This wrapper keeps scan-related options on the subcommands used by ``fleetctl``
-and refuses to start a scan when the configured projects root is unavailable.
+and refuses every inventory scan when the configured projects root is unavailable.
 The underlying dashboard implementation remains in ``control_hub_agent.py``.
 """
 
@@ -11,10 +11,19 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from http import HTTPStatus
 from pathlib import Path
 from typing import Sequence
 
 import control_hub_agent as hub
+
+
+_CORE_RUN_SCAN = hub.run_scan
+_CORE_HUB_HANDLER = hub.HubHandler
+
+
+class ScanRefusedError(RuntimeError):
+    """Raised when a scan cannot safely establish its observation boundary."""
 
 
 def add_common_inventory_options(parser: argparse.ArgumentParser) -> None:
@@ -156,8 +165,63 @@ def projects_root_error(projects_root: Path) -> str | None:
     return None
 
 
+def guarded_run_scan(
+    db_path: Path,
+    projects_root: Path,
+    linear_team_id: str | None,
+    *,
+    chat_work_json: Path = hub.DEFAULT_CHAT_WORK_JSON,
+    venture_report_json: Path = hub.DEFAULT_VENTURE_REPORT_JSON,
+) -> dict[str, int]:
+    """Run the core scanner only after validating the observation boundary.
+
+    Keeping the guard on the shared callable protects CLI scans, scan-first serving,
+    and HTTP-triggered rescans that otherwise call ``control_hub_agent.run_scan``
+    directly after the server has already started.
+    """
+
+    error = projects_root_error(projects_root)
+    if error:
+        raise ScanRefusedError(error)
+    return _CORE_RUN_SCAN(
+        db_path,
+        projects_root,
+        linear_team_id,
+        chat_work_json=chat_work_json,
+        venture_report_json=venture_report_json,
+    )
+
+
+class SafeHubHandler(_CORE_HUB_HANDLER):
+    """Dashboard handler that fails closed when the scan root disappears."""
+
+    def do_POST(self) -> None:  # noqa: N802
+        if self.path == "/scan":
+            error = projects_root_error(self.projects_root)
+            if error:
+                payload = (
+                    f"scan refused: {error}\n"
+                    "existing database state was not opened or pruned.\n"
+                ).encode("utf-8")
+                self.send_response(HTTPStatus.SERVICE_UNAVAILABLE)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
+        super().do_POST()
+
+
+def install_runtime_guards() -> None:
+    """Route all scans reached through this entry point through fail-closed guards."""
+
+    hub.run_scan = guarded_run_scan
+    hub.HubHandler = SafeHubHandler
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    install_runtime_guards()
 
     if getattr(args, "scan_first", False):
         error = projects_root_error(args.projects_root)
