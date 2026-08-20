@@ -172,7 +172,7 @@ def guarded_run_scan(
     *,
     chat_work_json: Path = hub.DEFAULT_CHAT_WORK_JSON,
     venture_report_json: Path = hub.DEFAULT_VENTURE_REPORT_JSON,
-) -> dict[str, int]:
+) -> dict[str, int | str]:
     """Run the core scanner only after validating the observation boundary.
 
     Keeping the guard on the shared callable protects CLI scans, scan-first serving,

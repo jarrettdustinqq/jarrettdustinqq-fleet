@@ -62,10 +62,20 @@ The Control Hub follows a five-stage loop:
 
 ## Data Model
 
-- `repos`: local source-of-truth for engineering execution context.
+- `repos`: local operational observations plus operator-owned focus fields; not
+  canonical cross-project truth.
+- `repo_scan_runs`: explicit `complete`, `partial`, or `failed` repository
+  observation outcomes.
 - `tasks`: external and local work items with management fields.
 - `recommendations`: generated guidance tracked as open/done/resolved.
 - `meta`: scan timestamps and integration status.
+
+Repository reconciliation is fail-closed. Failed observations never open the
+database, partial observations never reconcile absence, and complete
+observations stale-mark unseen rows instead of deleting them. The default
+30-day stale grace is a review threshold; deletion remains an explicit future
+operation. Canonical repository/workstream identity remains in
+`jarrettdustinqq/continuity`, while filesystem discovery is evidence.
 
 ## Next Extensions
 
