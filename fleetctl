@@ -20,6 +20,7 @@ Usage:
   fleetctl mission-control [options]  Run chat+venture inventory, then launch unified hub
   fleetctl hub-scan [options]         Scan inventory into Control Hub DB
   fleetctl hub-serve [options]        Run scan + local Control Hub dashboard
+  fleetctl hub-runtime [options]      Manage non-root state, service, and backups
   fleetctl shell                      Enter nix dev shell (requires nix)
 USAGE
 }
@@ -70,6 +71,9 @@ case "$cmd" in
       printf "[warn] install sqlite3 to run: sqlite3 ~/.local/share/fleet-control-hub/control_hub.db '.tables'\n" >&2
     fi
     exec python3 "$DIR/ops/control_hub_safe_entry.py" scan-serve "$@"
+    ;;
+  hub-runtime)
+    exec python3 "$DIR/ops/control_hub_runtime.py" "$@"
     ;;
   shell)
     exec nix develop "$DIR" -c "${SHELL:-bash}"

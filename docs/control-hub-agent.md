@@ -136,6 +136,32 @@ Startup diagnostics and prerequisites:
   `sqlite3 ~/.local/share/fleet-control-hub/control_hub.db '.tables'`
 - If the HTTP bind fails (for example, port already in use), startup logs include the failing bind target and a `--port` recovery hint.
 
+
+## Non-Root Runtime and Recovery
+
+For background operation, use the identity-bound runtime instead of embedding
+ad-hoc paths in a privileged service:
+
+```bash
+./fleetctl hub-runtime configure \
+  --projects-root "$HOME/projects" \
+  --repo-registry "$HOME/projects/continuity/repo-registry.json"
+./fleetctl hub-runtime check
+./fleetctl hub-runtime scan
+./fleetctl hub-runtime install-user-service
+```
+
+The config records one non-root UID/GID/user and one authoritative private state
+directory. Every runtime command revalidates identity, ownership, permissions,
+and symlink safety. The user service runs guarded `scan-serve` on loopback; the
+daily timer uses SQLite's online backup API and writes a SHA-256/integrity
+manifest without automatic retention deletion.
+
+Migration, backup verification, restore, user-unit review, and the required
+host-evidence checklist are in `docs/control-hub-runtime.md`. Repository CI proves
+the contract under an isolated non-root user, but that does not establish the
+current Chromebook/Crostini host state.
+
 ## Optional Integrations
 
 ### Linear
@@ -165,9 +191,12 @@ When enabled, only non-completed and non-canceled assigned issues are imported.
 
 ## Data Storage
 
-- SQLite DB path:
-  `~/.local/share/fleet-control-hub/control_hub.db`
-- Local-only and file-based for portability and backups.
+- Authoritative runtime DB path by default:
+  `${FLEET_CONTROL_HUB_STATE_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/fleet-control-hub}/control_hub.db`
+- Runtime config path by default:
+  `${XDG_CONFIG_HOME:-$HOME/.config}/fleet-control-hub/runtime.json`
+- The identity-bound runtime requires state directory mode `0700` and private config/database/backup modes `0600`.
+- Local-only and file-based for portability and verified backups.
 - The current database schema is an operational projection, not the canonical
   cross-project source of truth. Durable project and workstream state belongs in
   `jarrettdustinqq/continuity`.

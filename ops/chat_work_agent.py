@@ -7,6 +7,7 @@ import argparse
 import dataclasses
 import datetime as dt
 import json
+import os
 import re
 import sqlite3
 import subprocess
@@ -18,11 +19,20 @@ from typing import Any, Iterable
 
 DEFAULT_STATE_DB = Path.home() / ".codex" / "state_5.sqlite"
 DEFAULT_HISTORY = Path.home() / ".codex" / "history.jsonl"
-DEFAULT_MARKDOWN_OUT = Path.home() / ".local" / "share" / "fleet-control-hub" / "chat_work_brief.md"
-DEFAULT_JSON_OUT = Path.home() / ".local" / "share" / "fleet-control-hub" / "chat_work_brief.json"
-DEFAULT_CODEX_PROMPT_OUT = Path.home() / ".local" / "share" / "fleet-control-hub" / "chat_work_codex_prompt.txt"
-DEFAULT_DELTA_LOG = Path.home() / ".local" / "share" / "fleet-control-hub" / "chat_work_deltas.jsonl"
-DEFAULT_ACK_STATE = Path.home() / ".local" / "share" / "fleet-control-hub" / "chat_work_ack.json"
+DEFAULT_DATA_HOME = Path(
+    os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share"
+).expanduser()
+DEFAULT_CONTROL_HUB_STATE_DIR = Path(
+    os.environ.get("FLEET_CONTROL_HUB_STATE_DIR")
+    or DEFAULT_DATA_HOME / "fleet-control-hub"
+).expanduser()
+DEFAULT_MARKDOWN_OUT = DEFAULT_CONTROL_HUB_STATE_DIR / "chat_work_brief.md"
+DEFAULT_JSON_OUT = DEFAULT_CONTROL_HUB_STATE_DIR / "chat_work_brief.json"
+DEFAULT_CODEX_PROMPT_OUT = (
+    DEFAULT_CONTROL_HUB_STATE_DIR / "chat_work_codex_prompt.txt"
+)
+DEFAULT_DELTA_LOG = DEFAULT_CONTROL_HUB_STATE_DIR / "chat_work_deltas.jsonl"
+DEFAULT_ACK_STATE = DEFAULT_CONTROL_HUB_STATE_DIR / "chat_work_ack.json"
 
 BLOCKED_PATTERNS = [
     "error",
