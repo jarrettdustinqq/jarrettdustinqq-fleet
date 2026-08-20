@@ -45,6 +45,12 @@ DEFAULT_MODE_STABILITY_THRESHOLD = 2
 DEFAULT_STATE_DIR = Path.home() / ".local" / "share" / APP_NAME
 DEFAULT_CHAT_WORK_JSON = DEFAULT_STATE_DIR / "chat_work_brief.json"
 DEFAULT_VENTURE_REPORT_JSON = DEFAULT_STATE_DIR / "venture_autonomy_report.json"
+REPO_SCAN_COMPLETE = "complete"
+REPO_SCAN_PARTIAL = "partial"
+REPO_SCAN_FAILED = "failed"
+REPO_STALE_GRACE_DAYS = 30
+MAX_REPO_SCAN_ERRORS = 50
+MAX_REPO_SCAN_ERROR_CHARS = 500
 
 
 def now_utc_iso() -> str:
@@ -112,7 +118,21 @@ def init_db(conn: sqlite3.Connection) -> None:
             remote_url TEXT,
             focus_level INTEGER NOT NULL DEFAULT 0,
             next_action TEXT NOT NULL DEFAULT '',
+            inventory_status TEXT NOT NULL DEFAULT 'active',
+            last_seen_at TEXT,
+            missing_since TEXT,
             updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS repo_scan_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            started_at TEXT NOT NULL,
+            completed_at TEXT NOT NULL,
+            projects_root TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('complete', 'partial', 'failed')),
+            observed_repo_count INTEGER NOT NULL DEFAULT 0,
+            stale_repo_count INTEGER NOT NULL DEFAULT 0,
+            errors_json TEXT NOT NULL DEFAULT '[]'
         );
 
         CREATE TABLE IF NOT EXISTS tasks (
@@ -223,6 +243,9 @@ def init_db(conn: sqlite3.Connection) -> None:
     ensure_column(conn, "window_activity_events", "task_complexity TEXT NOT NULL DEFAULT 'unknown'")
     ensure_column(conn, "window_activity_events", "suggested_reasoning_mode TEXT NOT NULL DEFAULT ''")
     ensure_column(conn, "window_activity_events", "mode_rationale TEXT NOT NULL DEFAULT ''")
+    ensure_column(conn, "repos", "inventory_status TEXT NOT NULL DEFAULT 'active'")
+    ensure_column(conn, "repos", "last_seen_at TEXT")
+    ensure_column(conn, "repos", "missing_since TEXT")
     conn.commit()
 
 
@@ -281,24 +304,118 @@ def set_codex_reasoning_mode(config_path: Path, mode: str) -> tuple[bool, str]:
     return True, f"set model_reasoning_effort={target}"
 
 
-def find_git_repos(projects_root: Path) -> list[Path]:
+class RepoDiscoveryError(RuntimeError):
+    """Raised when the repository observation boundary cannot be established."""
+
+
+@dataclass(frozen=True)
+class RepoDiscoveryResult:
+    status: str
+    repositories: tuple[Path, ...]
+    errors: tuple[str, ...]
+    projects_root: Path
+
+
+def _validated_git_toplevel(candidate: Path) -> tuple[Path | None, str | None]:
+    rc, toplevel, stderr = run_cmd(
+        ["git", "rev-parse", "--show-toplevel"],
+        cwd=candidate,
+    )
+    if rc != 0 or not toplevel:
+        detail = stderr or "git rev-parse returned no repository root"
+        return None, f"invalid Git candidate {candidate}: {detail}"
+
+    try:
+        resolved = Path(toplevel).resolve(strict=True)
+    except OSError as exc:
+        return None, f"unresolvable Git candidate {candidate}: {exc}"
+
+    if resolved != candidate.resolve():
+        return None, (
+            f"Git candidate {candidate} resolves to unexpected toplevel {resolved}"
+        )
+    return resolved, None
+
+
+def discover_git_repos(projects_root: Path) -> RepoDiscoveryResult:
+    """Return repository observations with an explicit completeness outcome."""
+
+    root = projects_root.expanduser()
+    try:
+        resolved_root = root.resolve(strict=True)
+    except (FileNotFoundError, OSError) as exc:
+        return RepoDiscoveryResult(
+            REPO_SCAN_FAILED,
+            (),
+            (f"projects root is unavailable: {root} ({exc})",),
+            root,
+        )
+
+    if not resolved_root.is_dir():
+        return RepoDiscoveryResult(
+            REPO_SCAN_FAILED,
+            (),
+            (f"projects root is not a directory: {resolved_root}",),
+            resolved_root,
+        )
+    if resolved_root == Path(resolved_root.anchor):
+        return RepoDiscoveryResult(
+            REPO_SCAN_FAILED,
+            (),
+            (f"refusing to recursively scan filesystem root: {resolved_root}",),
+            resolved_root,
+        )
+    if not os.access(resolved_root, os.R_OK | os.X_OK):
+        return RepoDiscoveryResult(
+            REPO_SCAN_FAILED,
+            (),
+            (f"projects root is not readable/searchable: {resolved_root}",),
+            resolved_root,
+        )
+
     repos: list[Path] = []
-    if not projects_root.exists():
-        return repos
+    errors: list[str] = []
 
-    for root, dirs, _files in os.walk(projects_root):
-        root_path = Path(root)
-        if ".git" in dirs:
-            repos.append(root_path)
-            # Do not descend into nested folders inside a git repository.
-            dirs[:] = []
-            continue
+    def record_error(message: str) -> None:
+        if len(errors) < MAX_REPO_SCAN_ERRORS:
+            errors.append(message[:MAX_REPO_SCAN_ERROR_CHARS])
+        elif len(errors) == MAX_REPO_SCAN_ERRORS:
+            errors.append("additional repository discovery errors omitted")
 
-        # Skip heavy directories when not in a repo yet.
-        skip = {".cache", "node_modules", ".venv", "venv"}
-        dirs[:] = [d for d in dirs if d not in skip]
+    def record_walk_error(exc: OSError) -> None:
+        record_error(f"repository discovery error: {exc}")
 
-    return sorted(repos)
+    try:
+        walker = os.walk(resolved_root, onerror=record_walk_error)
+        for root_text, dirs, files in walker:
+            root_path = Path(root_text)
+            if ".git" in dirs or ".git" in files:
+                validated, error = _validated_git_toplevel(root_path)
+                if error:
+                    record_error(error)
+                elif validated is not None:
+                    repos.append(validated)
+                # A Git marker is a repository boundary even when malformed.
+                dirs[:] = []
+                continue
+
+            skip = {".cache", "node_modules", ".venv", "venv"}
+            dirs[:] = [d for d in dirs if d not in skip]
+    except OSError as exc:
+        record_error(f"repository discovery aborted: {exc}")
+
+    unique_repos = tuple(sorted(set(repos)))
+    status = REPO_SCAN_PARTIAL if errors else REPO_SCAN_COMPLETE
+    return RepoDiscoveryResult(status, unique_repos, tuple(errors), resolved_root)
+
+
+def find_git_repos(projects_root: Path) -> list[Path]:
+    """Compatibility wrapper that refuses incomplete observations."""
+
+    result = discover_git_repos(projects_root)
+    if result.status != REPO_SCAN_COMPLETE:
+        raise RepoDiscoveryError("; ".join(result.errors) or result.status)
+    return list(result.repositories)
 
 
 @dataclass
@@ -363,9 +480,10 @@ def upsert_repo(conn: sqlite3.Connection, snap: RepoSnapshot) -> None:
         """
         INSERT INTO repos (
             path, name, branch, dirty, ahead, behind, last_commit_at,
-            last_commit_age_days, remote_url, updated_at
+            last_commit_age_days, remote_url, inventory_status,
+            last_seen_at, missing_since, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL, ?)
         ON CONFLICT(path) DO UPDATE SET
             name = excluded.name,
             branch = excluded.branch,
@@ -375,6 +493,9 @@ def upsert_repo(conn: sqlite3.Connection, snap: RepoSnapshot) -> None:
             last_commit_at = excluded.last_commit_at,
             last_commit_age_days = excluded.last_commit_age_days,
             remote_url = excluded.remote_url,
+            inventory_status = 'active',
+            last_seen_at = excluded.last_seen_at,
+            missing_since = NULL,
             updated_at = excluded.updated_at
         """,
         (
@@ -388,16 +509,49 @@ def upsert_repo(conn: sqlite3.Connection, snap: RepoSnapshot) -> None:
             snap.last_commit_age_days,
             snap.remote_url,
             snap.updated_at,
+            snap.updated_at,
         ),
     )
 
 
-def prune_missing_repos(conn: sqlite3.Connection, repo_paths: list[str]) -> None:
+def mark_missing_repos_stale(
+    conn: sqlite3.Connection,
+    repo_paths: list[str],
+    *,
+    observed_at: str,
+) -> int:
+    """Stale-mark unseen repositories without deleting operator-owned fields."""
+
     if not repo_paths:
-        conn.execute("DELETE FROM repos")
-        return
+        cursor = conn.execute(
+            """
+            UPDATE repos
+            SET inventory_status = 'stale',
+                missing_since = COALESCE(missing_since, ?)
+            WHERE inventory_status != 'stale'
+            """,
+            (observed_at,),
+        )
+        return max(0, cursor.rowcount)
+
     placeholders = ",".join("?" for _ in repo_paths)
-    conn.execute(f"DELETE FROM repos WHERE path NOT IN ({placeholders})", repo_paths)
+    cursor = conn.execute(
+        f"""
+        UPDATE repos
+        SET inventory_status = 'stale',
+            missing_since = COALESCE(missing_since, ?)
+        WHERE path NOT IN ({placeholders})
+          AND inventory_status != 'stale'
+        """,
+        [observed_at, *repo_paths],
+    )
+    return max(0, cursor.rowcount)
+
+
+def prune_missing_repos(conn: sqlite3.Connection, repo_paths: list[str]) -> None:
+    """Deprecated compatibility shim; destructive repository pruning is disabled."""
+
+    mark_missing_repos_stale(conn, repo_paths, observed_at=now_utc_iso())
 
 
 @dataclass
@@ -1838,6 +1992,7 @@ def generate_recommendations(
     linear_task_count: int,
     projects_root: Path,
     *,
+    repo_scan_status: str = REPO_SCAN_COMPLETE,
     chat_workstream_count: int,
     venture_repo_count: int,
     chat_status: str,
@@ -1845,12 +2000,25 @@ def generate_recommendations(
 ) -> list[Recommendation]:
     recs: list[Recommendation] = []
 
-    if not repos:
+    if not repos and repo_scan_status == REPO_SCAN_COMPLETE:
         recs.append(
             Recommendation(
                 category="inventory",
                 title="No git repositories discovered",
                 details=f"No repositories were found under {projects_root}. Add or clone repos, then rescan.",
+                priority=1,
+            )
+        )
+    elif repo_scan_status == REPO_SCAN_PARTIAL:
+        recs.append(
+            Recommendation(
+                category="inventory",
+                title="Repository observation incomplete",
+                details=(
+                    f"The scan under {projects_root} was partial. Prior inventory was "
+                    "preserved; repair the observation boundary before treating absence "
+                    "as authoritative."
+                ),
                 priority=1,
             )
         )
@@ -1961,7 +2129,12 @@ def generate_recommendations(
     return recs
 
 
-def sync_recommendations(conn: sqlite3.Connection, recs: list[Recommendation]) -> None:
+def sync_recommendations(
+    conn: sqlite3.Connection,
+    recs: list[Recommendation],
+    *,
+    resolve_missing: bool = True,
+) -> None:
     now = now_utc_iso()
     current_fingerprints = {r.fingerprint for r in recs}
 
@@ -1982,13 +2155,14 @@ def sync_recommendations(conn: sqlite3.Connection, recs: list[Recommendation]) -
             (rec.fingerprint, rec.category, rec.title, rec.details, rec.priority, now),
         )
 
-    for row in conn.execute("SELECT fingerprint FROM recommendations"):
-        fp = row["fingerprint"]
-        if fp not in current_fingerprints:
-            conn.execute(
-                "UPDATE recommendations SET status = 'resolved', updated_at = ? WHERE fingerprint = ?",
-                (now, fp),
-            )
+    if resolve_missing:
+        for row in conn.execute("SELECT fingerprint FROM recommendations"):
+            fp = row["fingerprint"]
+            if fp not in current_fingerprints:
+                conn.execute(
+                    "UPDATE recommendations SET status = 'resolved', updated_at = ? WHERE fingerprint = ?",
+                    (now, fp),
+                )
 
 
 def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
@@ -2008,55 +2182,101 @@ def run_scan(
     *,
     chat_work_json: Path = DEFAULT_CHAT_WORK_JSON,
     venture_report_json: Path = DEFAULT_VENTURE_REPORT_JSON,
-) -> dict[str, int]:
+) -> dict[str, int | str]:
+    scan_started_at = now_utc_iso()
+    discovery = discover_git_repos(projects_root)
+    if discovery.status == REPO_SCAN_FAILED:
+        raise RepoDiscoveryError("; ".join(discovery.errors) or "repository scan failed")
+
+    snapshots = [snapshot_repo(path) for path in discovery.repositories]
     conn = db_connect(db_path)
-    init_db(conn)
+    try:
+        init_db(conn)
 
-    repos_paths = find_git_repos(projects_root)
-    snapshots = [snapshot_repo(path) for path in repos_paths]
-    for snap in snapshots:
-        upsert_repo(conn, snap)
-    prune_missing_repos(conn, [s.path for s in snapshots])
+        for snap in snapshots:
+            upsert_repo(conn, snap)
 
-    linear_task_count = 0
-    linear_key = os.environ.get("LINEAR_API_KEY")
-    if linear_key:
-        try:
-            linear_task_count = scan_linear_tasks(conn, linear_key, linear_team_id)
-            set_meta(conn, "last_linear_scan_status", "ok")
-        except Exception as exc:  # pragma: no cover - runtime networking path
-            set_meta(conn, "last_linear_scan_status", f"error: {exc}")
-    else:
-        set_meta(conn, "last_linear_scan_status", "skipped: LINEAR_API_KEY missing")
+        stale_repo_count = 0
+        if discovery.status == REPO_SCAN_COMPLETE:
+            stale_repo_count = mark_missing_repos_stale(
+                conn,
+                [s.path for s in snapshots],
+                observed_at=scan_started_at,
+            )
 
-    chat_workstream_count, chat_status = scan_chat_workstream_tasks(conn, chat_work_json)
-    set_meta(conn, "last_chat_inventory_status", chat_status)
-    set_meta(conn, "last_chat_inventory_count", str(chat_workstream_count))
-    set_meta(conn, "last_chat_inventory_path", str(chat_work_json))
+        linear_task_count = 0
+        linear_key = os.environ.get("LINEAR_API_KEY")
+        if linear_key:
+            try:
+                linear_task_count = scan_linear_tasks(conn, linear_key, linear_team_id)
+                set_meta(conn, "last_linear_scan_status", "ok")
+            except Exception as exc:  # pragma: no cover - runtime networking path
+                set_meta(conn, "last_linear_scan_status", f"error: {exc}")
+        else:
+            set_meta(conn, "last_linear_scan_status", "skipped: LINEAR_API_KEY missing")
 
-    venture_repo_count, venture_status = scan_venture_repo_tasks(conn, venture_report_json)
-    set_meta(conn, "last_venture_inventory_status", venture_status)
-    set_meta(conn, "last_venture_inventory_count", str(venture_repo_count))
-    set_meta(conn, "last_venture_inventory_path", str(venture_report_json))
+        chat_workstream_count, chat_status = scan_chat_workstream_tasks(conn, chat_work_json)
+        set_meta(conn, "last_chat_inventory_status", chat_status)
+        set_meta(conn, "last_chat_inventory_count", str(chat_workstream_count))
+        set_meta(conn, "last_chat_inventory_path", str(chat_work_json))
 
-    recs = generate_recommendations(
-        snapshots,
-        linear_task_count,
-        projects_root,
-        chat_workstream_count=chat_workstream_count,
-        venture_repo_count=venture_repo_count,
-        chat_status=chat_status,
-        venture_status=venture_status,
-    )
-    sync_recommendations(conn, recs)
+        venture_repo_count, venture_status = scan_venture_repo_tasks(conn, venture_report_json)
+        set_meta(conn, "last_venture_inventory_status", venture_status)
+        set_meta(conn, "last_venture_inventory_count", str(venture_repo_count))
+        set_meta(conn, "last_venture_inventory_path", str(venture_report_json))
 
-    set_meta(conn, "last_scan_at", now_utc_iso())
-    set_meta(conn, "projects_root", str(projects_root))
-    conn.commit()
-    conn.close()
+        recs = generate_recommendations(
+            snapshots,
+            linear_task_count,
+            projects_root,
+            repo_scan_status=discovery.status,
+            chat_workstream_count=chat_workstream_count,
+            venture_repo_count=venture_repo_count,
+            chat_status=chat_status,
+            venture_status=venture_status,
+        )
+        sync_recommendations(
+            conn,
+            recs,
+            resolve_missing=discovery.status == REPO_SCAN_COMPLETE,
+        )
+
+        scan_completed_at = now_utc_iso()
+        set_meta(conn, "last_scan_at", scan_completed_at)
+        set_meta(conn, "projects_root", str(discovery.projects_root))
+        set_meta(conn, "last_repo_scan_status", discovery.status)
+        set_meta(conn, "last_repo_scan_errors", json.dumps(discovery.errors))
+        set_meta(conn, "last_repo_scan_observed_count", str(len(snapshots)))
+        set_meta(conn, "repo_stale_grace_days", str(REPO_STALE_GRACE_DAYS))
+        conn.execute(
+            """
+            INSERT INTO repo_scan_runs (
+                started_at, completed_at, projects_root, status,
+                observed_repo_count, stale_repo_count, errors_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                scan_started_at,
+                scan_completed_at,
+                str(discovery.projects_root),
+                discovery.status,
+                len(snapshots),
+                stale_repo_count,
+                json.dumps(discovery.errors),
+            ),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
     return {
+        "repo_scan_status": discovery.status,
+        "repo_scan_errors": len(discovery.errors),
         "repos": len(snapshots),
+        "stale_repos": stale_repo_count,
         "dirty_repos": len([s for s in snapshots if s.dirty]),
         "linear_tasks": linear_task_count,
         "chat_workstreams": chat_workstream_count,
@@ -2161,6 +2381,7 @@ def render_dashboard(state: dict[str, Any]) -> str:
 
     open_tasks = [t for t in tasks if not t["done"]]
     dirty_repos = [r for r in repos if r["dirty"]]
+    stale_repos = [r for r in repos if r["inventory_status"] == "stale"]
 
     repo_rows = []
     for r in repos:
@@ -2170,6 +2391,7 @@ def render_dashboard(state: dict[str, Any]) -> str:
             f"""
             <tr>
               <td>{esc(r["name"])}</td>
+              <td>{esc(r["inventory_status"])}</td>
               <td><code>{esc(r["branch"])}</code></td>
               <td>{dirty_mark}</td>
               <td>{esc(r["ahead"])}/{esc(r["behind"])}</td>
@@ -2442,6 +2664,7 @@ def render_dashboard(state: dict[str, Any]) -> str:
     </div>
     <div class="grid">
       <div class="card"><div class="k">Repositories</div><div class="v">{len(repos)}</div></div>
+      <div class="card"><div class="k">Stale Repositories</div><div class="v">{len(stale_repos)}</div></div>
       <div class="card"><div class="k">Dirty Repositories</div><div class="v">{len(dirty_repos)}</div></div>
       <div class="card"><div class="k">Open Tasks/Streams</div><div class="v">{len(open_tasks)}</div></div>
       <div class="card"><div class="k">Open Recommendations</div><div class="v">{len(recs)}</div></div>
@@ -2512,7 +2735,7 @@ def render_dashboard(state: dict[str, Any]) -> str:
       <table>
         <thead>
           <tr>
-            <th>Name</th><th>Branch</th><th>Dirty</th><th>Ahead/Behind</th><th>Last Commit Age (d)</th><th>Remote</th><th>Management</th>
+            <th>Name</th><th>Inventory</th><th>Branch</th><th>Dirty</th><th>Ahead/Behind</th><th>Last Commit Age (d)</th><th>Remote</th><th>Management</th>
           </tr>
         </thead>
         <tbody>

@@ -30,13 +30,22 @@ If `bootstrap` is run without arguments, repo URLs are loaded from `repos.txt`
 - `PROJECTS_DIR` (default: `$HOME/projects`): the intentionally managed repository root.
 - `SSH_KEY_PATH` (default: `$HOME/.ssh/id_ed25519`): SSH private-key path; the matching `.pub` file must also exist.
 
-GitHub authentication passes when either a complete SSH keypair exists or the
-GitHub CLI is authenticated for `github.com` and configured for HTTPS. The CLI
-check is noninteractive and suppresses authentication output.
+GitHub health is decided by a noninteractive `git ls-remote` preflight for every
+active entry in `repos.txt`, including private support repositories. An SSH
+keypair is configuration evidence, not proof that GitHub accepts the key. An
+authenticated GitHub CLI HTTPS session is supported, and auth diagnostics are
+suppressed.
 
 Set `PROJECTS_DIR` only to a reviewed repository boundary. Do not point it at a
 broad workspace merely because that directory contains repositories; an outer
 Git repository can mask or distort nested inventory.
+
+Control Hub repository scans expose `complete`, `partial`, or `failed`
+observation status. Failed scans refuse before opening the database. Partial
+scans may refresh observed rows but never reconcile missing rows or resolve
+missing recommendations. A verified complete scan stale-marks unseen repository
+rows with a 30-day review grace instead of deleting them, preserving
+`focus_level`, `next_action`, and prior observations.
 
 Example using a dedicated managed root:
 

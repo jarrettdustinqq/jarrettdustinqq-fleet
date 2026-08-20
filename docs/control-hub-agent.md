@@ -36,6 +36,23 @@ projects root exists, is a searchable directory, and is not the filesystem root.
 If validation fails, the command exits with status `2` without opening or pruning
 the existing database.
 
+The core scanner also enforces this boundary for direct/imported use. Repository
+discovery records one of three outcomes:
+
+- `complete`: the selected root was fully observed; unseen rows are marked
+  `stale` for review, never immediately deleted.
+- `partial`: at least one subtree or Git candidate could not be validated;
+  observed rows may refresh, but missing rows and recommendations are preserved.
+- `failed`: the observation root itself is unavailable or unsafe; the database
+  is not opened.
+
+Git candidates are verified with `git rev-parse`, and linked worktrees with a
+`.git` file are observed instead of being silently skipped. Committed complete
+and partial outcomes, counts, and bounded error summaries are recorded in
+`repo_scan_runs` and `meta`; a failed root is refused before either is opened.
+Stale rows retain operator-owned `focus_level` and `next_action`; the default
+review grace is 30 days and no automatic deletion is performed.
+
 Direct guarded usage:
 
 ```bash
@@ -110,6 +127,10 @@ When enabled, only non-completed and non-canceled assigned issues are imported.
 - The current database schema is an operational projection, not the canonical
   cross-project source of truth. Durable project and workstream state belongs in
   `jarrettdustinqq/continuity`.
+- `repos.inventory_status`, `last_seen_at`, and `missing_since` distinguish
+  observed rows from stale observations without erasing operator context.
+- `repo_scan_runs` stores the completeness outcome, observed/stale counts, and
+  bounded error details for each committed repository scan.
 
 ## Recommended Entry Point
 
