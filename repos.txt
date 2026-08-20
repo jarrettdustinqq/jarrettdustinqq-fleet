@@ -2,15 +2,17 @@
 # Source of truth: jarrettdustinqq/continuity:repo-registry.json
 #
 # Include canonical, support, and app-surface repos needed on the controller node.
-# Archive and obsolete repos are listed below as comments so agents do not treat
-# them as active production inputs.
+# Archive, obsolete, and financially gated experiments are listed below as comments
+# when they are intentionally excluded from default controller bootstrap.
 
 # canonical
 https://github.com/jarrettdustinqq/continuity.git
 https://github.com/jarrettdustinqq/phantom-shell.git
 
-# support
+# support required on the controller
 https://github.com/jarrettdustinqq/jarrettdustinqq-fleet.git
+# Private supervised host-operations source; requires authenticated private-repo access.
+https://github.com/jarrettdustinqq/system-operator-agent.git
 https://github.com/jarrettdustinqq/continuity-spine.git
 https://github.com/jarrettdustinqq/ledger-witness-offsite.git
 https://github.com/jarrettdustinqq/phantom-shell-dr-vault.git
@@ -22,6 +24,9 @@ https://github.com/jarrettdustinqq/aistudio.git
 # https://github.com/jarrettdustinqq/continuity-master-plan.git
 # https://github.com/jarrettdustinqq/minimal-showcase.git
 
-# obsolete / placeholders — intentionally not bootstrapped by default
+# active experimental but financially gated — intentionally not bootstrapped by default
+# No payment/signing/claim/mainnet asset-transfer behavior is implied by registry membership.
 # https://github.com/jarrettdustinqq/aether.git
+
+# obsolete / unclassified — intentionally not bootstrapped by default
 # https://github.com/jarrettdustinqq/aetheros.git
