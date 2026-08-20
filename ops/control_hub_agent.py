@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 from urllib import request
 from urllib.parse import parse_qs, urlsplit, urlunsplit
 
@@ -53,9 +53,11 @@ DEFAULT_REPO_REGISTRY = Path(
 REPO_SCAN_COMPLETE = "complete"
 REPO_SCAN_PARTIAL = "partial"
 REPO_SCAN_FAILED = "failed"
+REPO_ROOT_REMOVED = "removed"
 REPO_STALE_GRACE_DAYS = 30
 MAX_REPO_SCAN_ERRORS = 50
 MAX_REPO_SCAN_ERROR_CHARS = 500
+MAX_PROJECTS_ROOTS = 32
 REPO_REGISTRY_COMPLETE = "complete"
 REPO_REGISTRY_UNAVAILABLE = "unavailable"
 REPO_REGISTRY_INVALID = "invalid"
@@ -148,6 +150,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             last_seen_at TEXT,
             missing_since TEXT,
             registry_name TEXT COLLATE NOCASE,
+            observation_root TEXT,
+            root_removed_at TEXT,
             updated_at TEXT NOT NULL
         );
 
@@ -180,8 +184,34 @@ def init_db(conn: sqlite3.Connection) -> None:
             repo_registry_path TEXT,
             repo_registry_status TEXT,
             registered_repo_count INTEGER NOT NULL DEFAULT 0,
-            repo_registry_errors_json TEXT NOT NULL DEFAULT '[]'
+            repo_registry_errors_json TEXT NOT NULL DEFAULT '[]',
+            projects_roots_json TEXT NOT NULL DEFAULT '[]'
         );
+
+        CREATE TABLE IF NOT EXISTS repo_observation_roots (
+            projects_root TEXT PRIMARY KEY,
+            configured INTEGER NOT NULL DEFAULT 1,
+            last_scan_status TEXT,
+            last_scan_at TEXT,
+            errors_json TEXT NOT NULL DEFAULT '[]',
+            removed_at TEXT,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS repo_root_scan_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scan_run_id INTEGER NOT NULL,
+            projects_root TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (
+                status IN ('complete', 'partial', 'failed', 'removed')
+            ),
+            observed_repo_count INTEGER NOT NULL DEFAULT 0,
+            stale_repo_count INTEGER NOT NULL DEFAULT 0,
+            errors_json TEXT NOT NULL DEFAULT '[]'
+        );
+
+        CREATE INDEX IF NOT EXISTS repo_root_scan_runs_scan_idx
+            ON repo_root_scan_runs(scan_run_id);
 
         CREATE TABLE IF NOT EXISTS tasks (
             source TEXT NOT NULL,
@@ -295,6 +325,8 @@ def init_db(conn: sqlite3.Connection) -> None:
     ensure_column(conn, "repos", "last_seen_at TEXT")
     ensure_column(conn, "repos", "missing_since TEXT")
     ensure_column(conn, "repos", "registry_name TEXT COLLATE NOCASE")
+    ensure_column(conn, "repos", "observation_root TEXT")
+    ensure_column(conn, "repos", "root_removed_at TEXT")
     ensure_column(
         conn,
         "registered_repos",
@@ -311,6 +343,17 @@ def init_db(conn: sqlite3.Connection) -> None:
         conn,
         "repo_scan_runs",
         "repo_registry_errors_json TEXT NOT NULL DEFAULT '[]'",
+    )
+    ensure_column(
+        conn,
+        "repo_scan_runs",
+        "projects_roots_json TEXT NOT NULL DEFAULT '[]'",
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS repos_observation_root_idx
+        ON repos(observation_root)
+        """
     )
     sanitize_stored_remote_urls(conn)
     conn.commit()
@@ -790,6 +833,101 @@ class RepoDiscoveryResult:
     projects_root: Path
 
 
+@dataclass(frozen=True)
+class RepoDiscoveryBatch:
+    status: str
+    roots: tuple[RepoDiscoveryResult, ...]
+    errors: tuple[str, ...]
+    projects_roots: tuple[Path, ...]
+
+
+def lexical_absolute_path(path: Path) -> Path:
+    """Normalize a configured path without making identity depend on availability."""
+
+    return Path(os.path.abspath(os.fspath(path.expanduser())))
+
+
+def normalize_projects_roots(
+    projects_root: Path,
+    additional_projects_roots: Sequence[Path] = (),
+) -> tuple[Path, ...]:
+    """Return a bounded, de-duplicated, non-overlapping root configuration."""
+
+    requested = (projects_root, *tuple(additional_projects_roots or ()))
+    if len(requested) > MAX_PROJECTS_ROOTS:
+        raise RepoDiscoveryError(
+            "too many repository observation roots: "
+            f"{len(requested)} > {MAX_PROJECTS_ROOTS}"
+        )
+
+    normalized: list[Path] = []
+    for root in requested:
+        candidate = lexical_absolute_path(root)
+        if candidate not in normalized:
+            normalized.append(candidate)
+
+    for index, first in enumerate(normalized):
+        for second in normalized[index + 1 :]:
+            if first in second.parents or second in first.parents:
+                raise RepoDiscoveryError(
+                    "overlapping repository observation roots are ambiguous: "
+                    f"{first} and {second}"
+                )
+            try:
+                resolved_first = first.resolve(strict=True)
+                resolved_second = second.resolve(strict=True)
+            except OSError:
+                continue
+            if (
+                resolved_first == resolved_second
+                or resolved_first in resolved_second.parents
+                or resolved_second in resolved_first.parents
+            ):
+                raise RepoDiscoveryError(
+                    "repository observation roots resolve to an overlapping "
+                    f"boundary: {first} and {second}"
+                )
+
+    return tuple(normalized)
+
+
+def discover_git_roots(
+    projects_root: Path,
+    additional_projects_roots: Sequence[Path] = (),
+) -> RepoDiscoveryBatch:
+    """Observe independent roots while bounding aggregate diagnostic output."""
+
+    projects_roots = normalize_projects_roots(
+        projects_root,
+        additional_projects_roots,
+    )
+    discoveries = tuple(discover_git_repos(root) for root in projects_roots)
+
+    errors: list[str] = []
+
+    def record_error(message: str) -> None:
+        if len(errors) < MAX_REPO_SCAN_ERRORS:
+            errors.append(message[:MAX_REPO_SCAN_ERROR_CHARS])
+        elif errors[-1] != "additional repository discovery errors omitted":
+            errors[-1] = "additional repository discovery errors omitted"
+
+    for discovery in discoveries:
+        for error in discovery.errors:
+            record_error(f"[{discovery.projects_root}] {error}")
+
+    if discoveries and all(
+        discovery.status == REPO_SCAN_FAILED for discovery in discoveries
+    ):
+        raise RepoDiscoveryError("; ".join(errors) or "all repository scans failed")
+
+    status = (
+        REPO_SCAN_COMPLETE
+        if all(discovery.status == REPO_SCAN_COMPLETE for discovery in discoveries)
+        else REPO_SCAN_PARTIAL
+    )
+    return RepoDiscoveryBatch(status, discoveries, tuple(errors), projects_roots)
+
+
 def _validated_git_toplevel(candidate: Path) -> tuple[Path | None, str | None]:
     rc, toplevel, stderr = run_cmd(
         ["git", "rev-parse", "--show-toplevel"],
@@ -814,7 +952,7 @@ def _validated_git_toplevel(candidate: Path) -> tuple[Path | None, str | None]:
 def discover_git_repos(projects_root: Path) -> RepoDiscoveryResult:
     """Return repository observations with an explicit completeness outcome."""
 
-    root = projects_root.expanduser()
+    root = lexical_absolute_path(projects_root)
     try:
         resolved_root = root.resolve(strict=True)
     except (FileNotFoundError, OSError) as exc:
@@ -830,21 +968,21 @@ def discover_git_repos(projects_root: Path) -> RepoDiscoveryResult:
             REPO_SCAN_FAILED,
             (),
             (f"projects root is not a directory: {resolved_root}",),
-            resolved_root,
+            root,
         )
     if resolved_root == Path(resolved_root.anchor):
         return RepoDiscoveryResult(
             REPO_SCAN_FAILED,
             (),
             (f"refusing to recursively scan filesystem root: {resolved_root}",),
-            resolved_root,
+            root,
         )
     if not os.access(resolved_root, os.R_OK | os.X_OK):
         return RepoDiscoveryResult(
             REPO_SCAN_FAILED,
             (),
             (f"projects root is not readable/searchable: {resolved_root}",),
-            resolved_root,
+            root,
         )
 
     repos: list[Path] = []
@@ -853,8 +991,8 @@ def discover_git_repos(projects_root: Path) -> RepoDiscoveryResult:
     def record_error(message: str) -> None:
         if len(errors) < MAX_REPO_SCAN_ERRORS:
             errors.append(message[:MAX_REPO_SCAN_ERROR_CHARS])
-        elif len(errors) == MAX_REPO_SCAN_ERRORS:
-            errors.append("additional repository discovery errors omitted")
+        elif errors[-1] != "additional repository discovery errors omitted":
+            errors[-1] = "additional repository discovery errors omitted"
 
     def record_walk_error(exc: OSError) -> None:
         record_error(f"repository discovery error: {exc}")
@@ -880,7 +1018,7 @@ def discover_git_repos(projects_root: Path) -> RepoDiscoveryResult:
 
     unique_repos = tuple(sorted(set(repos)))
     status = REPO_SCAN_PARTIAL if errors else REPO_SCAN_COMPLETE
-    return RepoDiscoveryResult(status, unique_repos, tuple(errors), resolved_root)
+    return RepoDiscoveryResult(status, unique_repos, tuple(errors), root)
 
 
 def find_git_repos(projects_root: Path) -> list[Path]:
@@ -904,12 +1042,15 @@ class RepoSnapshot:
     last_commit_age_days: int | None
     remote_url: str | None
     registry_name: str | None
+    observation_root: str | None
     updated_at: str
 
 
 def snapshot_repo(
     repo_path: Path,
     registry_names: dict[str, str] | None = None,
+    *,
+    observation_root: Path | None = None,
 ) -> RepoSnapshot:
     rc, branch, _ = run_cmd(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_path)
     if rc != 0:
@@ -956,6 +1097,9 @@ def snapshot_repo(
         last_commit_age_days=last_age,
         remote_url=remote_url,
         registry_name=registry_name,
+        observation_root=(
+            str(observation_root) if observation_root is not None else None
+        ),
         updated_at=now_utc_iso(),
     )
 
@@ -971,9 +1115,10 @@ def upsert_repo(
         INSERT INTO repos (
             path, name, branch, dirty, ahead, behind, last_commit_at,
             last_commit_age_days, remote_url, inventory_status,
-            last_seen_at, missing_since, registry_name, updated_at
+            last_seen_at, missing_since, registry_name, observation_root,
+            root_removed_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL, ?, ?, NULL, ?)
         ON CONFLICT(path) DO UPDATE SET
             name = excluded.name,
             branch = excluded.branch,
@@ -986,6 +1131,8 @@ def upsert_repo(
             inventory_status = 'active',
             last_seen_at = excluded.last_seen_at,
             missing_since = NULL,
+            observation_root = excluded.observation_root,
+            root_removed_at = NULL,
             registry_name = CASE
                 WHEN ? THEN excluded.registry_name
                 ELSE COALESCE(excluded.registry_name, repos.registry_name)
@@ -1004,10 +1151,132 @@ def upsert_repo(
             snap.remote_url,
             snap.updated_at,
             snap.registry_name,
+            snap.observation_root,
             snap.updated_at,
             1 if registry_authoritative else 0,
         ),
     )
+
+
+def backfill_repo_observation_roots(
+    conn: sqlite3.Connection,
+    projects_roots: Sequence[Path],
+) -> None:
+    """Assign legacy unscoped observations without guessing across multiple roots."""
+
+    roots = tuple(projects_roots)
+    resolved_roots = tuple(
+        (root, root.resolve(strict=False)) for root in roots
+    )
+    for row in conn.execute(
+        "SELECT path FROM repos WHERE observation_root IS NULL"
+    ):
+        if len(roots) == 1:
+            matched_root = roots[0]
+        else:
+            repo_path = Path(row["path"]).expanduser().resolve(strict=False)
+            matches = [
+                root
+                for root, resolved_root in resolved_roots
+                if repo_path == resolved_root or resolved_root in repo_path.parents
+            ]
+            matched_root = matches[0] if len(matches) == 1 else None
+        if matched_root is not None:
+            conn.execute(
+                "UPDATE repos SET observation_root = ? WHERE path = ?",
+                (str(matched_root), row["path"]),
+            )
+
+
+def sync_repo_observation_roots(
+    conn: sqlite3.Connection,
+    discoveries: Sequence[RepoDiscoveryResult],
+    *,
+    observed_at: str,
+) -> tuple[str, ...]:
+    """Persist configured roots and explicitly mark configuration removals."""
+
+    current_roots = {str(discovery.projects_root) for discovery in discoveries}
+    removed_roots = tuple(
+        sorted(
+            row["projects_root"]
+            for row in conn.execute(
+                """
+                SELECT projects_root
+                FROM repo_observation_roots
+                WHERE configured = 1
+                """
+            )
+            if row["projects_root"] not in current_roots
+        )
+    )
+
+    for discovery in discoveries:
+        root_text = str(discovery.projects_root)
+        was_removed = conn.execute(
+            """
+            SELECT configured
+            FROM repo_observation_roots
+            WHERE projects_root = ?
+            """,
+            (root_text,),
+        ).fetchone()
+        conn.execute(
+            """
+            INSERT INTO repo_observation_roots (
+                projects_root, configured, last_scan_status, last_scan_at,
+                errors_json, removed_at, updated_at
+            ) VALUES (?, 1, ?, ?, ?, NULL, ?)
+            ON CONFLICT(projects_root) DO UPDATE SET
+                configured = 1,
+                last_scan_status = excluded.last_scan_status,
+                last_scan_at = excluded.last_scan_at,
+                errors_json = excluded.errors_json,
+                removed_at = NULL,
+                updated_at = excluded.updated_at
+            """,
+            (
+                root_text,
+                discovery.status,
+                observed_at,
+                json.dumps(discovery.errors),
+                observed_at,
+            ),
+        )
+        if was_removed is not None and not int(was_removed["configured"]):
+            conn.execute(
+                """
+                UPDATE repos
+                SET inventory_status = 'unverified', root_removed_at = NULL
+                WHERE observation_root = ?
+                  AND inventory_status = 'root-removed'
+                """,
+                (root_text,),
+            )
+
+    for root_text in removed_roots:
+        conn.execute(
+            """
+            UPDATE repo_observation_roots
+            SET configured = 0,
+                removed_at = COALESCE(removed_at, ?),
+                updated_at = ?
+            WHERE projects_root = ?
+            """,
+            (observed_at, observed_at, root_text),
+        )
+        conn.execute(
+            """
+            UPDATE repos
+            SET inventory_status = 'root-removed',
+                root_removed_at = COALESCE(root_removed_at, ?)
+            WHERE observation_root = ?
+              AND inventory_status != 'root-removed'
+            """,
+            (observed_at, root_text),
+        )
+
+    return removed_roots
 
 
 def mark_missing_repos_stale(
@@ -1015,18 +1284,26 @@ def mark_missing_repos_stale(
     repo_paths: list[str],
     *,
     observed_at: str,
+    observation_root: str | None = None,
 ) -> int:
     """Stale-mark unseen repositories without deleting operator-owned fields."""
 
+    scope_sql = ""
+    scope_params: list[str] = []
+    if observation_root is not None:
+        scope_sql = "AND observation_root = ?"
+        scope_params.append(observation_root)
+
     if not repo_paths:
         cursor = conn.execute(
-            """
+            f"""
             UPDATE repos
             SET inventory_status = 'stale',
                 missing_since = COALESCE(missing_since, ?)
-            WHERE inventory_status != 'stale'
+            WHERE inventory_status NOT IN ('stale', 'root-removed')
+              {scope_sql}
             """,
-            (observed_at,),
+            [observed_at, *scope_params],
         )
         return max(0, cursor.rowcount)
 
@@ -1037,9 +1314,10 @@ def mark_missing_repos_stale(
         SET inventory_status = 'stale',
             missing_since = COALESCE(missing_since, ?)
         WHERE path NOT IN ({placeholders})
-          AND inventory_status != 'stale'
+          AND inventory_status NOT IN ('stale', 'root-removed')
+          {scope_sql}
         """,
-        [observed_at, *repo_paths],
+        [observed_at, *repo_paths, *scope_params],
     )
     return max(0, cursor.rowcount)
 
@@ -2489,6 +2767,7 @@ def generate_recommendations(
     projects_root: Path,
     *,
     repo_scan_status: str = REPO_SCAN_COMPLETE,
+    projects_roots: Sequence[Path] = (),
     repo_registry_status: str = REPO_REGISTRY_COMPLETE,
     repo_registry_path: Path = DEFAULT_REPO_REGISTRY,
     chat_workstream_count: int,
@@ -2497,13 +2776,19 @@ def generate_recommendations(
     venture_status: str,
 ) -> list[Recommendation]:
     recs: list[Recommendation] = []
+    scan_scope = ", ".join(str(root) for root in projects_roots) or str(
+        projects_root
+    )
 
     if not repos and repo_scan_status == REPO_SCAN_COMPLETE:
         recs.append(
             Recommendation(
                 category="inventory",
                 title="No git repositories discovered",
-                details=f"No repositories were found under {projects_root}. Add or clone repos, then rescan.",
+                details=(
+                    f"No repositories were found under {scan_scope}. "
+                    "Add or clone repos, then rescan."
+                ),
                 priority=1,
             )
         )
@@ -2513,7 +2798,7 @@ def generate_recommendations(
                 category="inventory",
                 title="Repository observation incomplete",
                 details=(
-                    f"The scan under {projects_root} was partial. Prior inventory was "
+                    f"The scan across {scan_scope} was partial. Prior inventory was "
                     "preserved; repair the observation boundary before treating absence "
                     "as authoritative."
                 ),
@@ -2697,22 +2982,24 @@ def run_scan(
     projects_root: Path,
     linear_team_id: str | None,
     *,
+    additional_projects_roots: Sequence[Path] = (),
     chat_work_json: Path = DEFAULT_CHAT_WORK_JSON,
     venture_report_json: Path = DEFAULT_VENTURE_REPORT_JSON,
     repo_registry_path: Path | None = None,
 ) -> dict[str, int | str]:
     scan_started_at = now_utc_iso()
-    discovery = discover_git_repos(projects_root)
-    if discovery.status == REPO_SCAN_FAILED:
-        raise RepoDiscoveryError("; ".join(discovery.errors) or "repository scan failed")
+    discovery = discover_git_roots(projects_root, additional_projects_roots)
+    primary_projects_root = discovery.projects_roots[0]
 
     resolved_registry_path = resolve_repo_registry_path(
-        projects_root,
+        primary_projects_root,
         repo_registry_path,
     )
     registry = load_repo_registry(resolved_registry_path)
     snapshots: list[RepoSnapshot] = []
+    snapshots_by_root: dict[str, list[RepoSnapshot]] = {}
     registered_repo_count = 0
+    removed_roots: tuple[str, ...] = ()
     conn = db_connect(db_path)
     try:
         init_db(conn)
@@ -2723,11 +3010,29 @@ def run_scan(
                 registry,
                 imported_at=scan_started_at,
             )
+        removed_roots = sync_repo_observation_roots(
+            conn,
+            discovery.roots,
+            observed_at=scan_started_at,
+        )
+        backfill_repo_observation_roots(conn, discovery.projects_roots)
         registry_names = current_registry_name_map(conn)
-        snapshots = [
-            snapshot_repo(path, registry_names)
-            for path in discovery.repositories
-        ]
+        for root_discovery in discovery.roots:
+            root_text = str(root_discovery.projects_root)
+            root_snapshots = (
+                []
+                if root_discovery.status == REPO_SCAN_FAILED
+                else [
+                    snapshot_repo(
+                        path,
+                        registry_names,
+                        observation_root=root_discovery.projects_root,
+                    )
+                    for path in root_discovery.repositories
+                ]
+            )
+            snapshots_by_root[root_text] = root_snapshots
+            snapshots.extend(root_snapshots)
         for snap in snapshots:
             upsert_repo(
                 conn,
@@ -2746,12 +3051,18 @@ def run_scan(
         )
 
         stale_repo_count = 0
-        if discovery.status == REPO_SCAN_COMPLETE:
-            stale_repo_count = mark_missing_repos_stale(
-                conn,
-                [s.path for s in snapshots],
-                observed_at=scan_started_at,
-            )
+        root_stale_counts: dict[str, int] = {}
+        for root_discovery in discovery.roots:
+            root_text = str(root_discovery.projects_root)
+            root_stale_counts[root_text] = 0
+            if root_discovery.status == REPO_SCAN_COMPLETE:
+                root_stale_counts[root_text] = mark_missing_repos_stale(
+                    conn,
+                    [snap.path for snap in snapshots_by_root[root_text]],
+                    observed_at=scan_started_at,
+                    observation_root=root_text,
+                )
+                stale_repo_count += root_stale_counts[root_text]
 
         linear_task_count = 0
         linear_key = os.environ.get("LINEAR_API_KEY")
@@ -2777,8 +3088,9 @@ def run_scan(
         recs = generate_recommendations(
             snapshots,
             linear_task_count,
-            projects_root,
+            primary_projects_root,
             repo_scan_status=discovery.status,
+            projects_roots=discovery.projects_roots,
             repo_registry_status=registry.status,
             repo_registry_path=registry.path,
             chat_workstream_count=chat_workstream_count,
@@ -2796,11 +3108,35 @@ def run_scan(
         )
 
         scan_completed_at = now_utc_iso()
+        complete_root_count = sum(
+            root.status == REPO_SCAN_COMPLETE for root in discovery.roots
+        )
+        partial_root_count = sum(
+            root.status == REPO_SCAN_PARTIAL for root in discovery.roots
+        )
+        failed_root_count = sum(
+            root.status == REPO_SCAN_FAILED for root in discovery.roots
+        )
+        root_removed_repo_count = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM repos WHERE inventory_status = 'root-removed'"
+            ).fetchone()[0]
+        )
         set_meta(conn, "last_scan_at", scan_completed_at)
-        set_meta(conn, "projects_root", str(discovery.projects_root))
+        set_meta(conn, "projects_root", str(primary_projects_root))
+        set_meta(
+            conn,
+            "projects_roots",
+            json.dumps([str(root) for root in discovery.projects_roots]),
+        )
         set_meta(conn, "last_repo_scan_status", discovery.status)
         set_meta(conn, "last_repo_scan_errors", json.dumps(discovery.errors))
         set_meta(conn, "last_repo_scan_observed_count", str(len(snapshots)))
+        set_meta(conn, "configured_repo_root_count", str(len(discovery.roots)))
+        set_meta(conn, "complete_repo_root_count", str(complete_root_count))
+        set_meta(conn, "partial_repo_root_count", str(partial_root_count))
+        set_meta(conn, "failed_repo_root_count", str(failed_root_count))
+        set_meta(conn, "removed_repo_root_count", str(len(removed_roots)))
         set_meta(conn, "repo_stale_grace_days", str(REPO_STALE_GRACE_DAYS))
         set_meta(conn, "repo_registry_path", str(registry.path))
         set_meta(conn, "last_repo_registry_status", registry.status)
@@ -2812,19 +3148,20 @@ def run_scan(
                 "repo_registry_updated_at",
                 registry.registry_updated_at or "",
             )
-        conn.execute(
+        scan_cursor = conn.execute(
             """
             INSERT INTO repo_scan_runs (
                 started_at, completed_at, projects_root, status,
                 observed_repo_count, stale_repo_count, errors_json,
                 repo_registry_path, repo_registry_status,
-                registered_repo_count, repo_registry_errors_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                registered_repo_count, repo_registry_errors_json,
+                projects_roots_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 scan_started_at,
                 scan_completed_at,
-                str(discovery.projects_root),
+                str(primary_projects_root),
                 discovery.status,
                 len(snapshots),
                 stale_repo_count,
@@ -2833,8 +3170,38 @@ def run_scan(
                 registry.status,
                 registered_repo_count,
                 json.dumps(registry.errors),
+                json.dumps([str(root) for root in discovery.projects_roots]),
             ),
         )
+        scan_run_id = int(scan_cursor.lastrowid)
+        for root_discovery in discovery.roots:
+            root_text = str(root_discovery.projects_root)
+            conn.execute(
+                """
+                INSERT INTO repo_root_scan_runs (
+                    scan_run_id, projects_root, status,
+                    observed_repo_count, stale_repo_count, errors_json
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    scan_run_id,
+                    root_text,
+                    root_discovery.status,
+                    len(snapshots_by_root[root_text]),
+                    root_stale_counts[root_text],
+                    json.dumps(root_discovery.errors),
+                ),
+            )
+        for root_text in removed_roots:
+            conn.execute(
+                """
+                INSERT INTO repo_root_scan_runs (
+                    scan_run_id, projects_root, status,
+                    observed_repo_count, stale_repo_count, errors_json
+                ) VALUES (?, ?, ?, 0, 0, '[]')
+                """,
+                (scan_run_id, root_text, REPO_ROOT_REMOVED),
+            )
         conn.commit()
     except Exception:
         conn.rollback()
@@ -2845,11 +3212,17 @@ def run_scan(
     return {
         "repo_scan_status": discovery.status,
         "repo_scan_errors": len(discovery.errors),
+        "repo_roots": len(discovery.roots),
+        "repo_roots_complete": complete_root_count,
+        "repo_roots_partial": partial_root_count,
+        "repo_roots_failed": failed_root_count,
+        "repo_roots_removed": len(removed_roots),
         "repo_registry_status": registry.status,
         "repo_registry_errors": len(registry.errors),
         "registered_repos": registered_repo_count,
         "repos": len(snapshots),
         "stale_repos": stale_repo_count,
+        "root_removed_repos": root_removed_repo_count,
         "dirty_repos": len([s for s in snapshots if s.dirty]),
         "linear_tasks": linear_task_count,
         "chat_workstreams": chat_workstream_count,
@@ -2864,6 +3237,25 @@ def query_dashboard_state(conn: sqlite3.Connection) -> dict[str, Any]:
         SELECT *
         FROM repos
         ORDER BY focus_level DESC, dirty DESC, name ASC
+        """
+    ).fetchall()
+
+    repo_roots = conn.execute(
+        """
+        SELECT
+            repo_observation_roots.*,
+            COUNT(repos.path) AS observation_count,
+            COALESCE(
+                SUM(CASE WHEN repos.inventory_status = 'active' THEN 1 ELSE 0 END),
+                0
+            ) AS active_observation_count
+        FROM repo_observation_roots
+        LEFT JOIN repos
+          ON repos.observation_root = repo_observation_roots.projects_root
+        GROUP BY repo_observation_roots.projects_root
+        ORDER BY
+            repo_observation_roots.configured DESC,
+            repo_observation_roots.projects_root ASC
         """
     ).fetchall()
 
@@ -2946,6 +3338,7 @@ def query_dashboard_state(conn: sqlite3.Connection) -> dict[str, Any]:
 
     return {
         "repos": repos,
+        "repo_roots": repo_roots,
         "registered_repos": registered_repos,
         "tasks": tasks,
         "recommendations": recs,
@@ -2965,6 +3358,7 @@ def esc(text: Any) -> str:
 
 def render_dashboard(state: dict[str, Any]) -> str:
     repos = state["repos"]
+    repo_roots = state["repo_roots"]
     registered_repos = state["registered_repos"]
     tasks = state["tasks"]
     recs = state["recommendations"]
@@ -2977,9 +3371,39 @@ def render_dashboard(state: dict[str, Any]) -> str:
     open_tasks = [t for t in tasks if not t["done"]]
     dirty_repos = [r for r in repos if r["dirty"]]
     stale_repos = [r for r in repos if r["inventory_status"] == "stale"]
+    root_removed_repos = [
+        r for r in repos if r["inventory_status"] == "root-removed"
+    ]
+    configured_roots = [r for r in repo_roots if r["configured"]]
+    degraded_roots = [
+        r
+        for r in configured_roots
+        if r["last_scan_status"] != REPO_SCAN_COMPLETE
+    ]
     current_registered_repos = [
         r for r in registered_repos if r["registry_present"]
     ]
+
+    repo_root_rows = []
+    for root in repo_roots:
+        configuration = "configured" if root["configured"] else "removed"
+        observation_summary = (
+            f'{root["active_observation_count"]}/'
+            f'{root["observation_count"]} active/total'
+        )
+        repo_root_rows.append(
+            f"""
+            <tr>
+              <td><code>{esc(root["projects_root"])}</code></td>
+              <td>{esc(configuration)}</td>
+              <td>{esc(root["last_scan_status"] or "never")}</td>
+              <td>{esc(observation_summary)}</td>
+              <td>{esc(root["last_scan_at"] or "-")}</td>
+              <td>{esc(root["removed_at"] or "-")}</td>
+              <td><code>{esc(root["errors_json"] or "[]")}</code></td>
+            </tr>
+            """
+        )
 
     registered_repo_rows = []
     for r in registered_repos:
@@ -3019,6 +3443,7 @@ def render_dashboard(state: dict[str, Any]) -> str:
               <td>{esc(r["name"])}</td>
               <td><code>{esc(r["registry_name"] or "unregistered")}</code></td>
               <td><code>{esc(r["path"])}</code></td>
+              <td><code>{esc(r["observation_root"] or "legacy-unscoped")}</code></td>
               <td>{esc(r["inventory_status"])}</td>
               <td><code>{esc(r["branch"])}</code></td>
               <td>{dirty_mark}</td>
@@ -3275,6 +3700,7 @@ def render_dashboard(state: dict[str, Any]) -> str:
       | Chat inventory: {esc(meta.get("last_chat_inventory_status", "unknown"))} ({esc(meta.get("last_chat_inventory_count", "0"))})
       | Venture inventory: {esc(meta.get("last_venture_inventory_status", "unknown"))} ({esc(meta.get("last_venture_inventory_count", "0"))})
       | Canonical registry: {esc(meta.get("last_repo_registry_status", "unknown"))} ({esc(meta.get("registered_repo_count", "0"))})
+      | Repo roots: {esc(meta.get("last_repo_scan_status", "unknown"))} ({esc(meta.get("configured_repo_root_count", "0"))})
       | Window tracking: {esc(meta.get("window_tracking_status", "unknown"))}
       | Backend: {esc(meta.get("window_tracking_backend", "n/a"))}
       | Scope: {esc(meta.get("window_tracking_scope", "active-window"))}
@@ -3293,8 +3719,11 @@ def render_dashboard(state: dict[str, Any]) -> str:
     </div>
     <div class="grid">
       <div class="card"><div class="k">Registered Repositories</div><div class="v">{len(current_registered_repos)}</div></div>
+      <div class="card"><div class="k">Configured Roots</div><div class="v">{len(configured_roots)}</div></div>
+      <div class="card"><div class="k">Degraded Roots</div><div class="v">{len(degraded_roots)}</div></div>
       <div class="card"><div class="k">Local Checkouts</div><div class="v">{len(repos)}</div></div>
       <div class="card"><div class="k">Stale Checkouts</div><div class="v">{len(stale_repos)}</div></div>
+      <div class="card"><div class="k">Removed-Root Checkouts</div><div class="v">{len(root_removed_repos)}</div></div>
       <div class="card"><div class="k">Dirty Checkouts</div><div class="v">{len(dirty_repos)}</div></div>
       <div class="card"><div class="k">Open Tasks/Streams</div><div class="v">{len(open_tasks)}</div></div>
       <div class="card"><div class="k">Open Recommendations</div><div class="v">{len(recs)}</div></div>
@@ -3361,6 +3790,18 @@ def render_dashboard(state: dict[str, Any]) -> str:
     </section>
 
     <section>
+      <h2>Repository Observation Roots</h2>
+      <table>
+        <thead>
+          <tr><th>Root</th><th>Configuration</th><th>Last Scan</th><th>Observations</th><th>Observed At</th><th>Removed At</th><th>Bounded Errors</th></tr>
+        </thead>
+        <tbody>
+          {''.join(repo_root_rows) if repo_root_rows else '<tr><td colspan="7">No repository observation roots recorded yet.</td></tr>'}
+        </tbody>
+      </table>
+    </section>
+
+    <section>
       <h2>Canonical Repository Registry</h2>
       <table>
         <thead>
@@ -3379,11 +3820,11 @@ def render_dashboard(state: dict[str, Any]) -> str:
       <table>
         <thead>
           <tr>
-            <th>Name</th><th>Canonical Identity</th><th>Path</th><th>Inventory</th><th>Branch</th><th>Dirty</th><th>Ahead/Behind</th><th>Last Commit Age (d)</th><th>Remote</th><th>Management</th>
+            <th>Name</th><th>Canonical Identity</th><th>Path</th><th>Observation Root</th><th>Inventory</th><th>Branch</th><th>Dirty</th><th>Ahead/Behind</th><th>Last Commit Age (d)</th><th>Remote</th><th>Management</th>
           </tr>
         </thead>
         <tbody>
-          {''.join(repo_rows) if repo_rows else '<tr><td colspan="10">No local checkout observations found.</td></tr>'}
+          {''.join(repo_rows) if repo_rows else '<tr><td colspan="11">No local checkout observations found.</td></tr>'}
         </tbody>
       </table>
     </section>
@@ -3422,6 +3863,7 @@ def render_dashboard(state: dict[str, Any]) -> str:
 class HubHandler(BaseHTTPRequestHandler):
     db_path: Path
     projects_root: Path
+    additional_projects_roots: tuple[Path, ...]
     repo_registry_path: Path
     linear_team_id: str | None
     codex_config_path: Path
@@ -3465,6 +3907,7 @@ class HubHandler(BaseHTTPRequestHandler):
                 self.db_path,
                 self.projects_root,
                 self.linear_team_id,
+                additional_projects_roots=self.additional_projects_roots,
                 chat_work_json=self.chat_work_json,
                 venture_report_json=self.venture_report_json,
                 repo_registry_path=self.repo_registry_path,
@@ -3544,6 +3987,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         args.db,
         args.projects_root,
         args.linear_team_id,
+        additional_projects_roots=args.additional_projects_root,
         chat_work_json=args.chat_work_json,
         venture_report_json=args.venture_report_json,
         repo_registry_path=args.repo_registry,
@@ -3566,7 +4010,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
     )
     log_startup(
         f"startup requested: host={args.host} port={args.port} db={args.db} "
-        f"projects_root={args.projects_root} repo_registry={resolved_registry_path}"
+        f"projects_roots={[str(args.projects_root), *map(str, args.additional_projects_root)]} "
+        f"repo_registry={resolved_registry_path}"
     )
     log_startup(f"sqlite3 CLI: {sqlite3_cli_status}")
     if not sqlite3_cli_path:
@@ -3581,6 +4026,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
             args.db,
             args.projects_root,
             args.linear_team_id,
+            additional_projects_roots=args.additional_projects_root,
             chat_work_json=args.chat_work_json,
             venture_report_json=args.venture_report_json,
             repo_registry_path=args.repo_registry,
@@ -3645,6 +4091,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
     HubHandler.db_path = args.db
     HubHandler.projects_root = args.projects_root
+    HubHandler.additional_projects_roots = tuple(args.additional_projects_root)
     HubHandler.repo_registry_path = resolved_registry_path
     HubHandler.linear_team_id = args.linear_team_id
     HubHandler.codex_config_path = args.codex_config
@@ -3702,6 +4149,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=DEFAULT_PROJECTS_ROOT,
         help=f"Projects root to inventory (default: {DEFAULT_PROJECTS_ROOT})",
+    )
+    p.add_argument(
+        "--additional-projects-root",
+        type=Path,
+        action="append",
+        default=[],
+        help=(
+            "Additional independent repository observation root; repeat for "
+            f"multiple roots (maximum {MAX_PROJECTS_ROOTS} total)."
+        ),
     )
     p.add_argument(
         "--repo-registry",

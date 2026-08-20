@@ -43,6 +43,10 @@ class SafeEntryParserTests(unittest.TestCase):
                 "/tmp/control-hub.db",
                 "--repo-registry",
                 "/tmp/continuity/repo-registry.json",
+                "--additional-projects-root",
+                "/srv/projects-a",
+                "--additional-projects-root",
+                "/srv/projects-b",
             ]
         )
 
@@ -52,6 +56,10 @@ class SafeEntryParserTests(unittest.TestCase):
         self.assertEqual(
             args.repo_registry,
             Path("/tmp/continuity/repo-registry.json"),
+        )
+        self.assertEqual(
+            args.additional_projects_root,
+            [Path("/srv/projects-a"), Path("/srv/projects-b")],
         )
         self.assertTrue(args.scan_first)
 
@@ -77,6 +85,31 @@ class SafeEntryParserTests(unittest.TestCase):
 
 
 class SafeEntryGuardTests(unittest.TestCase):
+    def test_one_valid_root_allows_failed_peer_to_reach_core_scan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            valid_root = Path(tmp) / "valid"
+            missing_root = Path(tmp) / "missing"
+            valid_root.mkdir()
+            expected = {"repo_scan_status": "partial"}
+
+            with mock.patch.object(
+                safe_entry,
+                "_CORE_RUN_SCAN",
+                return_value=expected,
+            ) as core_scan:
+                result = safe_entry.guarded_run_scan(
+                    Path(tmp) / "control-hub.db",
+                    valid_root,
+                    None,
+                    additional_projects_roots=(missing_root,),
+                )
+
+            self.assertEqual(result, expected)
+            self.assertEqual(
+                core_scan.call_args.kwargs["additional_projects_roots"],
+                (missing_root,),
+            )
+
     def test_missing_root_refuses_before_scan_function_runs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             missing_root = Path(tmp) / "missing"
@@ -126,6 +159,31 @@ class SafeEntryGuardTests(unittest.TestCase):
             cmd_scan.assert_called_once()
             called_args = cmd_scan.call_args.args[0]
             self.assertEqual(called_args.projects_root, projects_root)
+
+    def test_cli_returns_refusal_if_core_discovery_loses_last_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            projects_root = Path(tmp) / "projects"
+            projects_root.mkdir()
+            stderr = io.StringIO()
+
+            with mock.patch.object(
+                safe_entry.hub,
+                "cmd_scan",
+                side_effect=safe_entry.hub.RepoDiscoveryError("root vanished"),
+            ):
+                with contextlib.redirect_stderr(stderr):
+                    rc = safe_entry.main(
+                        [
+                            "scan",
+                            "--projects-root",
+                            str(projects_root),
+                            "--db",
+                            str(Path(tmp) / "control-hub.db"),
+                        ]
+                    )
+
+            self.assertEqual(rc, 2)
+            self.assertIn("scan refused: root vanished", stderr.getvalue())
 
     def test_guarded_run_scan_preserves_repo_state_when_root_disappears(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -182,6 +240,29 @@ class SafeEntryGuardTests(unittest.TestCase):
             payload = handler.wfile.getvalue().decode("utf-8")
             self.assertIn("scan refused", payload)
             self.assertIn("existing database state was not opened or pruned", payload)
+
+    def test_http_rescan_returns_503_if_core_discovery_loses_last_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            projects_root = Path(tmp) / "projects"
+            projects_root.mkdir()
+            handler = object.__new__(safe_entry.SafeHubHandler)
+            handler.path = "/scan"
+            handler.projects_root = projects_root
+            handler.additional_projects_roots = ()
+            handler.wfile = io.BytesIO()
+
+            with mock.patch.object(
+                safe_entry._CORE_HUB_HANDLER,
+                "do_POST",
+                side_effect=safe_entry.ScanRefusedError("root vanished"),
+            ):
+                with mock.patch.object(handler, "send_response") as send_response:
+                    with mock.patch.object(handler, "send_header"):
+                        with mock.patch.object(handler, "end_headers"):
+                            handler.do_POST()
+
+            send_response.assert_called_once_with(HTTPStatus.SERVICE_UNAVAILABLE)
+            self.assertIn("scan refused: root vanished", handler.wfile.getvalue().decode())
 
 
 class FleetctlIntegrationTests(unittest.TestCase):

@@ -67,18 +67,25 @@ The Control Hub follows a five-stage loop:
 - `registered_repos`: local projection of canonical continuity registry identity,
   classification, lifecycle state, and canonical operator management fields.
 - `repos`: path-keyed local checkout/worktree observations plus preserved legacy
-  management fields; not canonical cross-project truth.
-- `repo_scan_runs`: explicit `complete`, `partial`, or `failed` repository
-  observation outcomes.
+  management fields and an owning observation root; not canonical cross-project
+  truth.
+- `repo_observation_roots`: current/removed root configuration plus each root's
+  latest independent outcome and bounded errors.
+- `repo_scan_runs`: aggregate scan outcome and root-set snapshot.
+- `repo_root_scan_runs`: per-root `complete`, `partial`, `failed`, or explicit
+  configuration-`removed` history under an aggregate scan.
 - `tasks`: external and local work items with management fields.
 - `recommendations`: generated guidance tracked as open/done/resolved.
 - `meta`: scan timestamps and integration status.
 
-Repository reconciliation is fail-closed. Failed observations never open the
-database, partial observations never reconcile absence, and complete
-observations stale-mark unseen rows instead of deleting them. The default
-30-day stale grace is a review threshold; deletion remains an explicit future
-operation. Canonical repository/workstream identity remains in
+Repository reconciliation is fail-closed and scoped by root. If every root
+fails, the database is not opened. When roots have mixed outcomes, complete
+roots may reconcile only observations they own, while partial/failed roots
+preserve their prior evidence. Omitting a previously configured root is recorded
+as an explicit reversible removal rather than confused with temporary
+unavailability. Complete roots stale-mark unseen rows instead of deleting them.
+The default 30-day stale grace is a review threshold; deletion remains an
+explicit future operation. Canonical repository/workstream identity remains in
 `jarrettdustinqq/continuity`; Control Hub imports a validated projection without
 becoming a competing source of truth. Registry input is also fail-closed:
 unavailable or invalid input preserves the last valid projection and operator

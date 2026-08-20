@@ -26,6 +26,7 @@ Local-first inventory agent + dashboard to manage active work in one place.
 # select an explicit inventory root and database
 ./fleetctl hub-scan \
   --projects-root "$HOME/agent_workspace" \
+  --additional-projects-root "$HOME/control_station" \
   --repo-registry "$HOME/agent_workspace/continuity/repo-registry.json" \
   --db "$HOME/.local/share/fleet-control-hub/control_hub.db"
 
@@ -34,27 +35,37 @@ Local-first inventory agent + dashboard to manage active work in one place.
 ```
 
 `hub-scan` and `hub-serve` route through `ops/control_hub_safe_entry.py`.
-Before opening the database, the guarded entry point verifies that the selected
-projects root exists, is a searchable directory, and is not the filesystem root.
-If validation fails, the command exits with status `2` without opening or pruning
-the existing database.
+Before opening the database, the guarded entry point verifies the configured
+roots. If configuration is ambiguous, or every root is unavailable/unsafe, the
+command exits with status `2` without opening or pruning the existing database.
+When at least one independent root remains observable, successful roots may
+refresh only their own evidence while failed roots preserve their prior rows.
 
-The core scanner also enforces this boundary for direct/imported use. Repository
-discovery records one of three outcomes:
+The primary root is selected with `--projects-root`. Add up to 31 independent
+roots by repeating `--additional-projects-root`. Duplicate paths are collapsed;
+overlapping parent/child roots are refused because scoped reconciliation would be
+ambiguous. The core scanner enforces the same boundary for direct/imported use.
+Each configured root records one of three outcomes:
 
 - `complete`: the selected root was fully observed; unseen rows are marked
   `stale` for review, never immediately deleted.
 - `partial`: at least one subtree or Git candidate could not be validated;
   observed rows may refresh, but missing rows and recommendations are preserved.
-- `failed`: the observation root itself is unavailable or unsafe; the database
-  is not opened.
+- `failed`: that observation root is unavailable or unsafe; its prior rows are
+  preserved. The database is not opened when every configured root fails.
 
 Git candidates are verified with `git rev-parse`, and linked worktrees with a
-`.git` file are observed instead of being silently skipped. Committed complete
-and partial outcomes, counts, and bounded error summaries are recorded in
-`repo_scan_runs` and `meta`; a failed root is refused before either is opened.
+`.git` file are observed instead of being silently skipped. Aggregate and
+per-root outcomes, counts, and bounded error summaries are recorded in
+`repo_scan_runs`, `repo_root_scan_runs`, `repo_observation_roots`, and `meta`.
 Stale rows retain operator-owned `focus_level` and `next_action`; the default
 review grace is 30 days and no automatic deletion is performed.
+
+Root configuration is explicit state. Omitting a previously configured root
+records a `removed` history event and marks its observations `root-removed`
+without deleting them. Including an unavailable root records `failed` and leaves
+its observations unchanged. Re-adding a removed root is reversible. This keeps
+temporary mount/network loss distinct from intentional configuration removal.
 
 The canonical registry path defaults to
 `<projects-root>/continuity/repo-registry.json`. It can be overridden with
@@ -70,6 +81,8 @@ Registered repositories and local observations are distinct:
 - `registered_repos` holds canonical `owner/repo` identity, classification,
   lifecycle state, registry guidance, and operator-owned focus/next-action fields.
 - `repos` remains the path-keyed local checkout/worktree observation table.
+- `repos.observation_root` records which independent root owns reconciliation for
+  that path.
 - HTTPS, SSH, and SCP-style GitHub origins are normalized for identity matching.
 - Multiple linked worktrees map to one canonical row and remain multiple local
   observations.
@@ -84,6 +97,7 @@ Direct guarded usage:
 ```bash
 python3 ./ops/control_hub_safe_entry.py scan
 python3 ./ops/control_hub_safe_entry.py scan --projects-root "$HOME/agent_workspace"
+python3 ./ops/control_hub_safe_entry.py scan --projects-root "$HOME/projects" --additional-projects-root "$HOME/control_station"
 python3 ./ops/control_hub_safe_entry.py scan-serve --port 8765
 python3 ./ops/control_hub_safe_entry.py scan --chat-work-json ~/.local/share/fleet-control-hub/chat_work_brief.json
 python3 ./ops/control_hub_safe_entry.py scan --venture-report-json ~/.local/share/fleet-control-hub/venture_autonomy_report.json
@@ -139,6 +153,8 @@ When enabled, only non-completed and non-canceled assigned issues are imported.
 - Repository table with editable `focus_level` (0-3) and `next_action`.
 - Canonical registry table with separate editable operator focus and next action,
   plus active/total local checkout counts.
+- Observation-root table with configuration state, per-root status, bounded
+  errors, removal time, and active/total observation counts.
 - Task/workstream table with editable `done` and `notes` (Linear + chat + venture).
 - Recommendation table with open/done tracking.
 - Live Focus panel with agenda title, app, location, in-window summary, last step, and next step.
@@ -160,6 +176,10 @@ When enabled, only non-completed and non-canceled assigned issues are imported.
 - `registered_repos` separates canonical identity and operator management state
   from checkout/worktree observations. Registry removals mark a row absent rather
   than deleting it.
+- `repo_observation_roots` stores configured/removed roots and each root's last
+  independently observed status.
+- `repo_root_scan_runs` stores per-root complete/partial/failed outcomes and
+  explicit root-removal events under the aggregate scan ID.
 - `repo_scan_runs` stores the completeness outcome, observed/stale counts, and
   bounded error details for each committed repository scan, together with the
   independently recorded registry import outcome.
