@@ -21,6 +21,18 @@ import control_hub_safe_entry as safe_entry  # noqa: E402
 
 
 class SafeEntryParserTests(unittest.TestCase):
+    def test_default_registry_follows_explicit_projects_root(self) -> None:
+        with mock.patch.object(safe_entry.hub, "CONFIGURED_REPO_REGISTRY", ""):
+            resolved = safe_entry.hub.resolve_repo_registry_path(
+                Path("/tmp/projects"),
+                None,
+            )
+
+        self.assertEqual(
+            resolved,
+            Path("/tmp/projects/continuity/repo-registry.json"),
+        )
+
     def test_scan_accepts_inventory_options_after_subcommand(self) -> None:
         args = safe_entry.build_parser().parse_args(
             [
@@ -29,12 +41,18 @@ class SafeEntryParserTests(unittest.TestCase):
                 "/tmp/projects",
                 "--db",
                 "/tmp/control-hub.db",
+                "--repo-registry",
+                "/tmp/continuity/repo-registry.json",
             ]
         )
 
         self.assertEqual(args.cmd, "scan")
         self.assertEqual(args.projects_root, Path("/tmp/projects"))
         self.assertEqual(args.db, Path("/tmp/control-hub.db"))
+        self.assertEqual(
+            args.repo_registry,
+            Path("/tmp/continuity/repo-registry.json"),
+        )
         self.assertTrue(args.scan_first)
 
     def test_scan_serve_accepts_inventory_and_serve_options(self) -> None:

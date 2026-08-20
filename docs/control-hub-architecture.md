@@ -54,16 +54,20 @@ Cons:
 
 The Control Hub follows a five-stage loop:
 
-1. Discover: scan local repos + optional external tasks.
-2. Normalize: persist into SQLite with stable item identities.
+1. Discover: import canonical registry identity, scan local checkouts/worktrees,
+   and collect optional external tasks.
+2. Normalize: persist canonical repositories separately from path-keyed local
+   observations and external items.
 3. Recommend: generate next-best actions from drift and risk signals.
 4. Manage: update focus, notes, and done state in the dashboard.
 5. Review: rescan regularly and resolve/reopen recommendations.
 
 ## Data Model
 
-- `repos`: local operational observations plus operator-owned focus fields; not
-  canonical cross-project truth.
+- `registered_repos`: local projection of canonical continuity registry identity,
+  classification, lifecycle state, and canonical operator management fields.
+- `repos`: path-keyed local checkout/worktree observations plus preserved legacy
+  management fields; not canonical cross-project truth.
 - `repo_scan_runs`: explicit `complete`, `partial`, or `failed` repository
   observation outcomes.
 - `tasks`: external and local work items with management fields.
@@ -75,7 +79,11 @@ database, partial observations never reconcile absence, and complete
 observations stale-mark unseen rows instead of deleting them. The default
 30-day stale grace is a review threshold; deletion remains an explicit future
 operation. Canonical repository/workstream identity remains in
-`jarrettdustinqq/continuity`, while filesystem discovery is evidence.
+`jarrettdustinqq/continuity`; Control Hub imports a validated projection without
+becoming a competing source of truth. Registry input is also fail-closed:
+unavailable or invalid input preserves the last valid projection and operator
+state. A canonical repository can exist without a checkout, and any number of
+local checkout/worktree observations can map to the same `owner/repo` identity.
 
 ## Next Extensions
 

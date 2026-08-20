@@ -27,7 +27,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib import request
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 
 APP_NAME = "fleet-control-hub"
@@ -45,16 +45,42 @@ DEFAULT_MODE_STABILITY_THRESHOLD = 2
 DEFAULT_STATE_DIR = Path.home() / ".local" / "share" / APP_NAME
 DEFAULT_CHAT_WORK_JSON = DEFAULT_STATE_DIR / "chat_work_brief.json"
 DEFAULT_VENTURE_REPORT_JSON = DEFAULT_STATE_DIR / "venture_autonomy_report.json"
+CONFIGURED_REPO_REGISTRY = os.environ.get("CONTINUITY_REPO_REGISTRY", "").strip()
+DEFAULT_REPO_REGISTRY = Path(
+    CONFIGURED_REPO_REGISTRY
+    or str(DEFAULT_PROJECTS_ROOT / "continuity" / "repo-registry.json")
+).expanduser()
 REPO_SCAN_COMPLETE = "complete"
 REPO_SCAN_PARTIAL = "partial"
 REPO_SCAN_FAILED = "failed"
 REPO_STALE_GRACE_DAYS = 30
 MAX_REPO_SCAN_ERRORS = 50
 MAX_REPO_SCAN_ERROR_CHARS = 500
+REPO_REGISTRY_COMPLETE = "complete"
+REPO_REGISTRY_UNAVAILABLE = "unavailable"
+REPO_REGISTRY_INVALID = "invalid"
+REPO_REGISTRY_SCHEMA_VERSION = 1
+MAX_REPO_REGISTRY_BYTES = 5 * 1024 * 1024
+MAX_REPO_REGISTRY_ERRORS = 20
+MAX_REPO_REGISTRY_ERROR_CHARS = 500
+GITHUB_REPOSITORY_NAME_RE = re.compile(
+    r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+)
 
 
 def now_utc_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def resolve_repo_registry_path(
+    projects_root: Path,
+    repo_registry_path: Path | None,
+) -> Path:
+    if repo_registry_path is not None:
+        return repo_registry_path.expanduser()
+    if CONFIGURED_REPO_REGISTRY:
+        return DEFAULT_REPO_REGISTRY
+    return projects_root.expanduser() / "continuity" / "repo-registry.json"
 
 
 def parse_iso(iso_text: str | None) -> datetime | None:
@@ -121,7 +147,25 @@ def init_db(conn: sqlite3.Connection) -> None:
             inventory_status TEXT NOT NULL DEFAULT 'active',
             last_seen_at TEXT,
             missing_since TEXT,
+            registry_name TEXT COLLATE NOCASE,
             updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS registered_repos (
+            registry_name TEXT PRIMARY KEY COLLATE NOCASE,
+            lifecycle_class TEXT NOT NULL,
+            role TEXT NOT NULL,
+            default_branch TEXT NOT NULL,
+            visibility TEXT NOT NULL,
+            registry_status TEXT NOT NULL,
+            boundary TEXT NOT NULL DEFAULT '',
+            registry_next_action TEXT NOT NULL DEFAULT '',
+            registry_present INTEGER NOT NULL DEFAULT 1,
+            focus_level INTEGER NOT NULL DEFAULT 0,
+            operator_next_action TEXT NOT NULL DEFAULT '',
+            legacy_state_migrated INTEGER NOT NULL DEFAULT 0,
+            registry_updated_at TEXT,
+            last_imported_at TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS repo_scan_runs (
@@ -132,7 +176,11 @@ def init_db(conn: sqlite3.Connection) -> None:
             status TEXT NOT NULL CHECK (status IN ('complete', 'partial', 'failed')),
             observed_repo_count INTEGER NOT NULL DEFAULT 0,
             stale_repo_count INTEGER NOT NULL DEFAULT 0,
-            errors_json TEXT NOT NULL DEFAULT '[]'
+            errors_json TEXT NOT NULL DEFAULT '[]',
+            repo_registry_path TEXT,
+            repo_registry_status TEXT,
+            registered_repo_count INTEGER NOT NULL DEFAULT 0,
+            repo_registry_errors_json TEXT NOT NULL DEFAULT '[]'
         );
 
         CREATE TABLE IF NOT EXISTS tasks (
@@ -246,6 +294,25 @@ def init_db(conn: sqlite3.Connection) -> None:
     ensure_column(conn, "repos", "inventory_status TEXT NOT NULL DEFAULT 'active'")
     ensure_column(conn, "repos", "last_seen_at TEXT")
     ensure_column(conn, "repos", "missing_since TEXT")
+    ensure_column(conn, "repos", "registry_name TEXT COLLATE NOCASE")
+    ensure_column(
+        conn,
+        "registered_repos",
+        "legacy_state_migrated INTEGER NOT NULL DEFAULT 0",
+    )
+    ensure_column(conn, "repo_scan_runs", "repo_registry_path TEXT")
+    ensure_column(conn, "repo_scan_runs", "repo_registry_status TEXT")
+    ensure_column(
+        conn,
+        "repo_scan_runs",
+        "registered_repo_count INTEGER NOT NULL DEFAULT 0",
+    )
+    ensure_column(
+        conn,
+        "repo_scan_runs",
+        "repo_registry_errors_json TEXT NOT NULL DEFAULT '[]'",
+    )
+    sanitize_stored_remote_urls(conn)
     conn.commit()
 
 
@@ -255,6 +322,413 @@ def ensure_column(conn: sqlite3.Connection, table: str, column_def: str) -> None
     known = {r[1] for r in rows}
     if col_name not in known:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column_def}")
+
+
+def sanitize_remote_url(remote_url: str | None) -> str | None:
+    """Return a display-safe remote URL without embedded credentials or query data."""
+
+    text = (remote_url or "").strip()
+    if not text:
+        return None
+
+    scp_match = re.match(r"^(?:[^@/:]+@)?([^/:]+):(.+)$", text)
+    if "://" not in text and scp_match:
+        host, path = scp_match.groups()
+        return f"ssh://{host}/{path.lstrip('/')}"
+
+    if "://" not in text:
+        return text
+
+    try:
+        parts = urlsplit(text)
+        host = parts.hostname
+        if not host:
+            return None
+        try:
+            port = parts.port
+        except ValueError:
+            port = None
+        display_host = f"[{host}]" if ":" in host else host
+        netloc = f"{display_host}:{port}" if port is not None else display_host
+        return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
+    except ValueError:
+        return None
+
+
+def canonical_repo_name_from_remote(remote_url: str | None) -> str | None:
+    """Return a case-folded ``owner/repo`` identity for GitHub remotes."""
+
+    text = (remote_url or "").strip()
+    if not text:
+        return None
+
+    host = ""
+    path = ""
+    scp_match = re.match(r"^(?:[^@/:]+@)?([^/:]+):(.+)$", text)
+    if "://" not in text and scp_match:
+        host, path = scp_match.groups()
+    else:
+        try:
+            parts = urlsplit(text)
+        except ValueError:
+            return None
+        host = parts.hostname or ""
+        path = parts.path
+
+    if host.casefold() != "github.com":
+        return None
+
+    components = [part for part in path.strip("/").split("/") if part]
+    if len(components) != 2:
+        return None
+    owner, repo = components
+    if repo.casefold().endswith(".git"):
+        repo = repo[:-4]
+    identity = f"{owner}/{repo}"
+    if not GITHUB_REPOSITORY_NAME_RE.fullmatch(identity):
+        return None
+    return identity.casefold()
+
+
+def sanitize_stored_remote_urls(conn: sqlite3.Connection) -> None:
+    """Remove embedded credentials from remote URLs written by older versions."""
+
+    for row in conn.execute(
+        "SELECT path, remote_url FROM repos WHERE remote_url IS NOT NULL"
+    ):
+        path = row["path"] if isinstance(row, sqlite3.Row) else row[0]
+        remote_url = row["remote_url"] if isinstance(row, sqlite3.Row) else row[1]
+        sanitized = sanitize_remote_url(remote_url)
+        if sanitized != remote_url:
+            conn.execute(
+                "UPDATE repos SET remote_url = ? WHERE path = ?",
+                (sanitized, path),
+            )
+
+
+@dataclass(frozen=True)
+class RegisteredRepo:
+    registry_name: str
+    lifecycle_class: str
+    role: str
+    default_branch: str
+    visibility: str
+    registry_status: str
+    boundary: str
+    registry_next_action: str
+
+
+@dataclass(frozen=True)
+class RepoRegistryResult:
+    status: str
+    repositories: tuple[RegisteredRepo, ...]
+    errors: tuple[str, ...]
+    path: Path
+    registry_updated_at: str | None
+
+
+def _registry_error_result(
+    status: str,
+    path: Path,
+    errors: list[str] | tuple[str, ...],
+) -> RepoRegistryResult:
+    bounded = tuple(
+        str(error)[:MAX_REPO_REGISTRY_ERROR_CHARS]
+        for error in list(errors)[:MAX_REPO_REGISTRY_ERRORS]
+    )
+    return RepoRegistryResult(status, (), bounded, path, None)
+
+
+def load_repo_registry(registry_path: Path) -> RepoRegistryResult:
+    """Load the continuity registry atomically; malformed input is all-or-nothing."""
+
+    path = registry_path.expanduser()
+    try:
+        stat = path.stat()
+    except (FileNotFoundError, OSError) as exc:
+        return _registry_error_result(
+            REPO_REGISTRY_UNAVAILABLE,
+            path,
+            [f"repository registry is unavailable: {path} ({exc})"],
+        )
+
+    if not path.is_file():
+        return _registry_error_result(
+            REPO_REGISTRY_INVALID,
+            path,
+            [f"repository registry is not a regular file: {path}"],
+        )
+    if stat.st_size > MAX_REPO_REGISTRY_BYTES:
+        return _registry_error_result(
+            REPO_REGISTRY_INVALID,
+            path,
+            [
+                "repository registry exceeds the bounded size limit: "
+                f"{stat.st_size} > {MAX_REPO_REGISTRY_BYTES} bytes"
+            ],
+        )
+
+    try:
+        with path.open("rb") as handle:
+            raw_payload = handle.read(MAX_REPO_REGISTRY_BYTES + 1)
+        if len(raw_payload) > MAX_REPO_REGISTRY_BYTES:
+            return _registry_error_result(
+                REPO_REGISTRY_INVALID,
+                path,
+                [
+                    "repository registry grew beyond the bounded size limit "
+                    "while it was being read"
+                ],
+            )
+        payload = json.loads(raw_payload.decode("utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        return _registry_error_result(
+            REPO_REGISTRY_INVALID,
+            path,
+            [f"repository registry could not be parsed: {exc}"],
+        )
+
+    errors: list[str] = []
+
+    def record_error(message: str) -> None:
+        if len(errors) < MAX_REPO_REGISTRY_ERRORS:
+            errors.append(message[:MAX_REPO_REGISTRY_ERROR_CHARS])
+        elif errors[-1] != "additional repository registry errors omitted":
+            errors[-1] = "additional repository registry errors omitted"
+
+    if not isinstance(payload, dict):
+        return _registry_error_result(
+            REPO_REGISTRY_INVALID,
+            path,
+            ["repository registry root must be a JSON object"],
+        )
+    if payload.get("schema_version") != REPO_REGISTRY_SCHEMA_VERSION:
+        record_error(
+            "repository registry schema_version must equal "
+            f"{REPO_REGISTRY_SCHEMA_VERSION}"
+        )
+
+    registry_updated_at = payload.get("updated_at")
+    if registry_updated_at is not None and not isinstance(registry_updated_at, str):
+        record_error("repository registry updated_at must be a string when present")
+        registry_updated_at = None
+
+    raw_repositories = payload.get("repositories")
+    if not isinstance(raw_repositories, list):
+        record_error("repository registry repositories must be a JSON array")
+        raw_repositories = []
+
+    registered: list[RegisteredRepo] = []
+    seen_names: set[str] = set()
+    required_fields = (
+        "name",
+        "class",
+        "role",
+        "default_branch",
+        "visibility",
+        "status",
+    )
+    for index, raw in enumerate(raw_repositories):
+        if not isinstance(raw, dict):
+            record_error(f"repositories[{index}] must be a JSON object")
+            continue
+
+        values: dict[str, str] = {}
+        entry_valid = True
+        for field in required_fields:
+            value = raw.get(field)
+            if not isinstance(value, str) or not value.strip():
+                record_error(
+                    f"repositories[{index}].{field} must be a non-empty string"
+                )
+                entry_valid = False
+                continue
+            if len(value) > 500:
+                record_error(f"repositories[{index}].{field} exceeds 500 characters")
+                entry_valid = False
+                continue
+            values[field] = value.strip()
+
+        name = values.get("name", "")
+        name_key = name.casefold()
+        if name and (
+            not GITHUB_REPOSITORY_NAME_RE.fullmatch(name)
+            or name.casefold().endswith(".git")
+        ):
+            record_error(
+                f"repositories[{index}].name is not a canonical owner/repo identity"
+            )
+            entry_valid = False
+        if name_key and name_key in seen_names:
+            record_error(
+                f"repositories[{index}].name duplicates a canonical identity: {name}"
+            )
+            entry_valid = False
+        if name_key:
+            seen_names.add(name_key)
+
+        boundary = raw.get("boundary", "")
+        next_action = raw.get("next_action", "")
+        for field, value in (("boundary", boundary), ("next_action", next_action)):
+            if not isinstance(value, str):
+                record_error(f"repositories[{index}].{field} must be a string")
+                entry_valid = False
+            elif len(value) > 20_000:
+                record_error(
+                    f"repositories[{index}].{field} exceeds 20000 characters"
+                )
+                entry_valid = False
+
+        if not entry_valid:
+            continue
+        registered.append(
+            RegisteredRepo(
+                registry_name=name,
+                lifecycle_class=values["class"],
+                role=values["role"],
+                default_branch=values["default_branch"],
+                visibility=values["visibility"],
+                registry_status=values["status"],
+                boundary=boundary.strip(),
+                registry_next_action=next_action.strip(),
+            )
+        )
+
+    if errors:
+        return _registry_error_result(REPO_REGISTRY_INVALID, path, errors)
+
+    return RepoRegistryResult(
+        REPO_REGISTRY_COMPLETE,
+        tuple(sorted(registered, key=lambda repo: repo.registry_name.casefold())),
+        (),
+        path,
+        registry_updated_at,
+    )
+
+
+def current_registry_name_map(conn: sqlite3.Connection) -> dict[str, str]:
+    return {
+        row["registry_name"].casefold(): row["registry_name"]
+        for row in conn.execute(
+            "SELECT registry_name FROM registered_repos WHERE registry_present = 1"
+        )
+    }
+
+
+def reconcile_repo_registry_links(
+    conn: sqlite3.Connection,
+    registry_names: dict[str, str],
+) -> None:
+    """Map every local checkout observation to current canonical registry identity."""
+
+    for row in conn.execute("SELECT path, remote_url FROM repos"):
+        remote_identity = canonical_repo_name_from_remote(row["remote_url"])
+        registry_name = registry_names.get(remote_identity or "")
+        conn.execute(
+            "UPDATE repos SET registry_name = ? WHERE path = ?",
+            (registry_name, row["path"]),
+        )
+
+
+def migrate_legacy_repo_management(conn: sqlite3.Connection) -> None:
+    """Move path-keyed management fields into canonical rows exactly once."""
+
+    canonical_rows = conn.execute(
+        """
+        SELECT registry_name, focus_level, operator_next_action
+        FROM registered_repos
+        WHERE legacy_state_migrated = 0
+        """
+    ).fetchall()
+    for canonical in canonical_rows:
+        local_rows = conn.execute(
+            """
+            SELECT focus_level, next_action, path
+            FROM repos
+            WHERE registry_name = ?
+            ORDER BY focus_level DESC,
+                     CASE WHEN next_action = '' THEN 1 ELSE 0 END ASC,
+                     path ASC
+            """,
+            (canonical["registry_name"],),
+        ).fetchall()
+        migrated_focus = int(canonical["focus_level"])
+        migrated_action = canonical["operator_next_action"]
+        if local_rows:
+            migrated_focus = max(
+                migrated_focus,
+                max(int(row["focus_level"]) for row in local_rows),
+            )
+            if not migrated_action:
+                migrated_action = next(
+                    (
+                        row["next_action"]
+                        for row in local_rows
+                        if row["next_action"]
+                    ),
+                    "",
+                )
+        conn.execute(
+            """
+            UPDATE registered_repos
+            SET focus_level = ?, operator_next_action = ?,
+                legacy_state_migrated = 1
+            WHERE registry_name = ?
+            """,
+            (migrated_focus, migrated_action, canonical["registry_name"]),
+        )
+
+
+def sync_registered_repos(
+    conn: sqlite3.Connection,
+    registry: RepoRegistryResult,
+    *,
+    imported_at: str,
+) -> int:
+    """Refresh canonical rows while preserving operator-owned management state."""
+
+    if registry.status != REPO_REGISTRY_COMPLETE:
+        return 0
+
+    conn.execute(
+        "UPDATE registered_repos SET registry_present = 0, last_imported_at = ?",
+        (imported_at,),
+    )
+    for repo in registry.repositories:
+        conn.execute(
+            """
+            INSERT INTO registered_repos (
+                registry_name, lifecycle_class, role, default_branch, visibility,
+                registry_status, boundary, registry_next_action,
+                registry_present, registry_updated_at, last_imported_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+            ON CONFLICT(registry_name) DO UPDATE SET
+                lifecycle_class = excluded.lifecycle_class,
+                role = excluded.role,
+                default_branch = excluded.default_branch,
+                visibility = excluded.visibility,
+                registry_status = excluded.registry_status,
+                boundary = excluded.boundary,
+                registry_next_action = excluded.registry_next_action,
+                registry_present = 1,
+                registry_updated_at = excluded.registry_updated_at,
+                last_imported_at = excluded.last_imported_at
+            """,
+            (
+                repo.registry_name,
+                repo.lifecycle_class,
+                repo.role,
+                repo.default_branch,
+                repo.visibility,
+                repo.registry_status,
+                repo.boundary,
+                repo.registry_next_action,
+                registry.registry_updated_at,
+                imported_at,
+            ),
+        )
+
+    return len(registry.repositories)
 
 
 def set_codex_reasoning_mode(config_path: Path, mode: str) -> tuple[bool, str]:
@@ -429,10 +903,14 @@ class RepoSnapshot:
     last_commit_at: str | None
     last_commit_age_days: int | None
     remote_url: str | None
+    registry_name: str | None
     updated_at: str
 
 
-def snapshot_repo(repo_path: Path) -> RepoSnapshot:
+def snapshot_repo(
+    repo_path: Path,
+    registry_names: dict[str, str] | None = None,
+) -> RepoSnapshot:
     rc, branch, _ = run_cmd(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_path)
     if rc != 0:
         branch = "unknown"
@@ -457,9 +935,15 @@ def snapshot_repo(repo_path: Path) -> RepoSnapshot:
         last_commit_at = None
     last_age = days_since(last_commit_at)
 
-    rc, remote_url, _ = run_cmd(["git", "remote", "get-url", "origin"], cwd=repo_path)
-    if rc != 0 or not remote_url:
-        remote_url = None
+    rc, raw_remote_url, _ = run_cmd(
+        ["git", "remote", "get-url", "origin"],
+        cwd=repo_path,
+    )
+    if rc != 0 or not raw_remote_url:
+        raw_remote_url = None
+    remote_identity = canonical_repo_name_from_remote(raw_remote_url)
+    registry_name = (registry_names or {}).get(remote_identity or "")
+    remote_url = sanitize_remote_url(raw_remote_url)
 
     return RepoSnapshot(
         path=str(repo_path),
@@ -471,19 +955,25 @@ def snapshot_repo(repo_path: Path) -> RepoSnapshot:
         last_commit_at=last_commit_at,
         last_commit_age_days=last_age,
         remote_url=remote_url,
+        registry_name=registry_name,
         updated_at=now_utc_iso(),
     )
 
 
-def upsert_repo(conn: sqlite3.Connection, snap: RepoSnapshot) -> None:
+def upsert_repo(
+    conn: sqlite3.Connection,
+    snap: RepoSnapshot,
+    *,
+    registry_authoritative: bool = False,
+) -> None:
     conn.execute(
         """
         INSERT INTO repos (
             path, name, branch, dirty, ahead, behind, last_commit_at,
             last_commit_age_days, remote_url, inventory_status,
-            last_seen_at, missing_since, updated_at
+            last_seen_at, missing_since, registry_name, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL, ?, ?)
         ON CONFLICT(path) DO UPDATE SET
             name = excluded.name,
             branch = excluded.branch,
@@ -496,6 +986,10 @@ def upsert_repo(conn: sqlite3.Connection, snap: RepoSnapshot) -> None:
             inventory_status = 'active',
             last_seen_at = excluded.last_seen_at,
             missing_since = NULL,
+            registry_name = CASE
+                WHEN ? THEN excluded.registry_name
+                ELSE COALESCE(excluded.registry_name, repos.registry_name)
+            END,
             updated_at = excluded.updated_at
         """,
         (
@@ -509,7 +1003,9 @@ def upsert_repo(conn: sqlite3.Connection, snap: RepoSnapshot) -> None:
             snap.last_commit_age_days,
             snap.remote_url,
             snap.updated_at,
+            snap.registry_name,
             snap.updated_at,
+            1 if registry_authoritative else 0,
         ),
     )
 
@@ -1993,6 +2489,8 @@ def generate_recommendations(
     projects_root: Path,
     *,
     repo_scan_status: str = REPO_SCAN_COMPLETE,
+    repo_registry_status: str = REPO_REGISTRY_COMPLETE,
+    repo_registry_path: Path = DEFAULT_REPO_REGISTRY,
     chat_workstream_count: int,
     venture_repo_count: int,
     chat_status: str,
@@ -2018,6 +2516,25 @@ def generate_recommendations(
                     f"The scan under {projects_root} was partial. Prior inventory was "
                     "preserved; repair the observation boundary before treating absence "
                     "as authoritative."
+                ),
+                priority=1,
+            )
+        )
+
+    if repo_registry_status != REPO_REGISTRY_COMPLETE:
+        status_label = (
+            "unavailable"
+            if repo_registry_status == REPO_REGISTRY_UNAVAILABLE
+            else "invalid"
+        )
+        recs.append(
+            Recommendation(
+                category="inventory",
+                title=f"Canonical repository registry {status_label}",
+                details=(
+                    f"Control Hub preserved prior canonical rows because {repo_registry_path} "
+                    f"was {status_label}. Restore a valid continuity repo-registry.json "
+                    "before treating registered-repository identity as current."
                 ),
                 priority=1,
             )
@@ -2182,19 +2699,51 @@ def run_scan(
     *,
     chat_work_json: Path = DEFAULT_CHAT_WORK_JSON,
     venture_report_json: Path = DEFAULT_VENTURE_REPORT_JSON,
+    repo_registry_path: Path | None = None,
 ) -> dict[str, int | str]:
     scan_started_at = now_utc_iso()
     discovery = discover_git_repos(projects_root)
     if discovery.status == REPO_SCAN_FAILED:
         raise RepoDiscoveryError("; ".join(discovery.errors) or "repository scan failed")
 
-    snapshots = [snapshot_repo(path) for path in discovery.repositories]
+    resolved_registry_path = resolve_repo_registry_path(
+        projects_root,
+        repo_registry_path,
+    )
+    registry = load_repo_registry(resolved_registry_path)
+    snapshots: list[RepoSnapshot] = []
+    registered_repo_count = 0
     conn = db_connect(db_path)
     try:
         init_db(conn)
 
+        if registry.status == REPO_REGISTRY_COMPLETE:
+            sync_registered_repos(
+                conn,
+                registry,
+                imported_at=scan_started_at,
+            )
+        registry_names = current_registry_name_map(conn)
+        snapshots = [
+            snapshot_repo(path, registry_names)
+            for path in discovery.repositories
+        ]
         for snap in snapshots:
-            upsert_repo(conn, snap)
+            upsert_repo(
+                conn,
+                snap,
+                registry_authoritative=registry.status == REPO_REGISTRY_COMPLETE,
+            )
+
+        if registry.status == REPO_REGISTRY_COMPLETE:
+            reconcile_repo_registry_links(conn, registry_names)
+            migrate_legacy_repo_management(conn)
+
+        registered_repo_count = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM registered_repos WHERE registry_present = 1"
+            ).fetchone()[0]
+        )
 
         stale_repo_count = 0
         if discovery.status == REPO_SCAN_COMPLETE:
@@ -2230,6 +2779,8 @@ def run_scan(
             linear_task_count,
             projects_root,
             repo_scan_status=discovery.status,
+            repo_registry_status=registry.status,
+            repo_registry_path=registry.path,
             chat_workstream_count=chat_workstream_count,
             venture_repo_count=venture_repo_count,
             chat_status=chat_status,
@@ -2238,7 +2789,10 @@ def run_scan(
         sync_recommendations(
             conn,
             recs,
-            resolve_missing=discovery.status == REPO_SCAN_COMPLETE,
+            resolve_missing=(
+                discovery.status == REPO_SCAN_COMPLETE
+                and registry.status == REPO_REGISTRY_COMPLETE
+            ),
         )
 
         scan_completed_at = now_utc_iso()
@@ -2248,12 +2802,24 @@ def run_scan(
         set_meta(conn, "last_repo_scan_errors", json.dumps(discovery.errors))
         set_meta(conn, "last_repo_scan_observed_count", str(len(snapshots)))
         set_meta(conn, "repo_stale_grace_days", str(REPO_STALE_GRACE_DAYS))
+        set_meta(conn, "repo_registry_path", str(registry.path))
+        set_meta(conn, "last_repo_registry_status", registry.status)
+        set_meta(conn, "last_repo_registry_errors", json.dumps(registry.errors))
+        set_meta(conn, "registered_repo_count", str(registered_repo_count))
+        if registry.status == REPO_REGISTRY_COMPLETE:
+            set_meta(
+                conn,
+                "repo_registry_updated_at",
+                registry.registry_updated_at or "",
+            )
         conn.execute(
             """
             INSERT INTO repo_scan_runs (
                 started_at, completed_at, projects_root, status,
-                observed_repo_count, stale_repo_count, errors_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                observed_repo_count, stale_repo_count, errors_json,
+                repo_registry_path, repo_registry_status,
+                registered_repo_count, repo_registry_errors_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 scan_started_at,
@@ -2263,6 +2829,10 @@ def run_scan(
                 len(snapshots),
                 stale_repo_count,
                 json.dumps(discovery.errors),
+                str(registry.path),
+                registry.status,
+                registered_repo_count,
+                json.dumps(registry.errors),
             ),
         )
         conn.commit()
@@ -2275,6 +2845,9 @@ def run_scan(
     return {
         "repo_scan_status": discovery.status,
         "repo_scan_errors": len(discovery.errors),
+        "repo_registry_status": registry.status,
+        "repo_registry_errors": len(registry.errors),
+        "registered_repos": registered_repo_count,
         "repos": len(snapshots),
         "stale_repos": stale_repo_count,
         "dirty_repos": len([s for s in snapshots if s.dirty]),
@@ -2291,6 +2864,26 @@ def query_dashboard_state(conn: sqlite3.Connection) -> dict[str, Any]:
         SELECT *
         FROM repos
         ORDER BY focus_level DESC, dirty DESC, name ASC
+        """
+    ).fetchall()
+
+    registered_repos = conn.execute(
+        """
+        SELECT
+            registered_repos.*,
+            COUNT(repos.path) AS checkout_count,
+            COALESCE(
+                SUM(CASE WHEN repos.inventory_status = 'active' THEN 1 ELSE 0 END),
+                0
+            ) AS active_checkout_count
+        FROM registered_repos
+        LEFT JOIN repos
+          ON repos.registry_name = registered_repos.registry_name
+        GROUP BY registered_repos.registry_name
+        ORDER BY
+            registered_repos.registry_present DESC,
+            registered_repos.focus_level DESC,
+            registered_repos.registry_name COLLATE NOCASE ASC
         """
     ).fetchall()
 
@@ -2353,6 +2946,7 @@ def query_dashboard_state(conn: sqlite3.Connection) -> dict[str, Any]:
 
     return {
         "repos": repos,
+        "registered_repos": registered_repos,
         "tasks": tasks,
         "recommendations": recs,
         "meta": meta,
@@ -2371,6 +2965,7 @@ def esc(text: Any) -> str:
 
 def render_dashboard(state: dict[str, Any]) -> str:
     repos = state["repos"]
+    registered_repos = state["registered_repos"]
     tasks = state["tasks"]
     recs = state["recommendations"]
     meta = state["meta"]
@@ -2382,6 +2977,37 @@ def render_dashboard(state: dict[str, Any]) -> str:
     open_tasks = [t for t in tasks if not t["done"]]
     dirty_repos = [r for r in repos if r["dirty"]]
     stale_repos = [r for r in repos if r["inventory_status"] == "stale"]
+    current_registered_repos = [
+        r for r in registered_repos if r["registry_present"]
+    ]
+
+    registered_repo_rows = []
+    for r in registered_repos:
+        presence = "registered" if r["registry_present"] else "removed"
+        checkout_summary = (
+            f'{r["active_checkout_count"]}/{r["checkout_count"]} active/total'
+        )
+        registered_repo_rows.append(
+            f"""
+            <tr>
+              <td><code>{esc(r["registry_name"])}</code></td>
+              <td>{esc(presence)}</td>
+              <td>{esc(r["lifecycle_class"])} / {esc(r["registry_status"])}</td>
+              <td>{esc(r["role"])}</td>
+              <td>{esc(r["visibility"])}</td>
+              <td>{esc(checkout_summary)}</td>
+              <td>{esc(r["registry_next_action"])}</td>
+              <td>
+                <form method="post" action="/registry/update">
+                  <input type="hidden" name="registry_name" value="{esc(r["registry_name"])}" />
+                  <input type="number" min="0" max="3" name="focus_level" value="{esc(r["focus_level"])}" style="width:4rem" />
+                  <input type="text" name="operator_next_action" value="{esc(r["operator_next_action"])}" placeholder="operator next action" style="width:16rem" />
+                  <button type="submit">Save</button>
+                </form>
+              </td>
+            </tr>
+            """
+        )
 
     repo_rows = []
     for r in repos:
@@ -2391,6 +3017,8 @@ def render_dashboard(state: dict[str, Any]) -> str:
             f"""
             <tr>
               <td>{esc(r["name"])}</td>
+              <td><code>{esc(r["registry_name"] or "unregistered")}</code></td>
+              <td><code>{esc(r["path"])}</code></td>
               <td>{esc(r["inventory_status"])}</td>
               <td><code>{esc(r["branch"])}</code></td>
               <td>{dirty_mark}</td>
@@ -2646,6 +3274,7 @@ def render_dashboard(state: dict[str, Any]) -> str:
       | Linear scan: {esc(meta.get("last_linear_scan_status", "unknown"))}
       | Chat inventory: {esc(meta.get("last_chat_inventory_status", "unknown"))} ({esc(meta.get("last_chat_inventory_count", "0"))})
       | Venture inventory: {esc(meta.get("last_venture_inventory_status", "unknown"))} ({esc(meta.get("last_venture_inventory_count", "0"))})
+      | Canonical registry: {esc(meta.get("last_repo_registry_status", "unknown"))} ({esc(meta.get("registered_repo_count", "0"))})
       | Window tracking: {esc(meta.get("window_tracking_status", "unknown"))}
       | Backend: {esc(meta.get("window_tracking_backend", "n/a"))}
       | Scope: {esc(meta.get("window_tracking_scope", "active-window"))}
@@ -2663,9 +3292,10 @@ def render_dashboard(state: dict[str, Any]) -> str:
       </span>
     </div>
     <div class="grid">
-      <div class="card"><div class="k">Repositories</div><div class="v">{len(repos)}</div></div>
-      <div class="card"><div class="k">Stale Repositories</div><div class="v">{len(stale_repos)}</div></div>
-      <div class="card"><div class="k">Dirty Repositories</div><div class="v">{len(dirty_repos)}</div></div>
+      <div class="card"><div class="k">Registered Repositories</div><div class="v">{len(current_registered_repos)}</div></div>
+      <div class="card"><div class="k">Local Checkouts</div><div class="v">{len(repos)}</div></div>
+      <div class="card"><div class="k">Stale Checkouts</div><div class="v">{len(stale_repos)}</div></div>
+      <div class="card"><div class="k">Dirty Checkouts</div><div class="v">{len(dirty_repos)}</div></div>
       <div class="card"><div class="k">Open Tasks/Streams</div><div class="v">{len(open_tasks)}</div></div>
       <div class="card"><div class="k">Open Recommendations</div><div class="v">{len(recs)}</div></div>
       <div class="card"><div class="k">Window Events</div><div class="v">{len(window_events)}</div></div>
@@ -2731,15 +3361,29 @@ def render_dashboard(state: dict[str, Any]) -> str:
     </section>
 
     <section>
-      <h2>Repository Inventory</h2>
+      <h2>Canonical Repository Registry</h2>
       <table>
         <thead>
           <tr>
-            <th>Name</th><th>Inventory</th><th>Branch</th><th>Dirty</th><th>Ahead/Behind</th><th>Last Commit Age (d)</th><th>Remote</th><th>Management</th>
+            <th>Identity</th><th>Registry</th><th>Class/Status</th><th>Role</th><th>Visibility</th><th>Local Checkouts</th><th>Registry Next Action</th><th>Management</th>
           </tr>
         </thead>
         <tbody>
-          {''.join(repo_rows) if repo_rows else '<tr><td colspan="7">No repositories found.</td></tr>'}
+          {''.join(registered_repo_rows) if registered_repo_rows else '<tr><td colspan="8">Canonical registry has not been loaded.</td></tr>'}
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Local Checkout & Worktree Observations</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th><th>Canonical Identity</th><th>Path</th><th>Inventory</th><th>Branch</th><th>Dirty</th><th>Ahead/Behind</th><th>Last Commit Age (d)</th><th>Remote</th><th>Management</th>
+          </tr>
+        </thead>
+        <tbody>
+          {''.join(repo_rows) if repo_rows else '<tr><td colspan="10">No local checkout observations found.</td></tr>'}
         </tbody>
       </table>
     </section>
@@ -2778,6 +3422,7 @@ def render_dashboard(state: dict[str, Any]) -> str:
 class HubHandler(BaseHTTPRequestHandler):
     db_path: Path
     projects_root: Path
+    repo_registry_path: Path
     linear_team_id: str | None
     codex_config_path: Path
     chat_work_json: Path
@@ -2822,6 +3467,7 @@ class HubHandler(BaseHTTPRequestHandler):
                 self.linear_team_id,
                 chat_work_json=self.chat_work_json,
                 venture_report_json=self.venture_report_json,
+                repo_registry_path=self.repo_registry_path,
             )
             self._redirect("/")
             return
@@ -2837,6 +3483,18 @@ class HubHandler(BaseHTTPRequestHandler):
                 conn.execute(
                     "UPDATE repos SET focus_level = ?, next_action = ? WHERE path = ?",
                     (focus, next_action, path),
+                )
+            elif self.path == "/registry/update":
+                registry_name = form.get("registry_name", "")
+                focus = int(form.get("focus_level", "0") or 0)
+                operator_next_action = form.get("operator_next_action", "").strip()
+                conn.execute(
+                    """
+                    UPDATE registered_repos
+                    SET focus_level = ?, operator_next_action = ?
+                    WHERE registry_name = ?
+                    """,
+                    (focus, operator_next_action, registry_name),
                 )
             elif self.path == "/task/update":
                 source = form.get("source", "")
@@ -2888,6 +3546,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         args.linear_team_id,
         chat_work_json=args.chat_work_json,
         venture_report_json=args.venture_report_json,
+        repo_registry_path=args.repo_registry,
     )
     print(json.dumps(summary, indent=2))
     return 0
@@ -2895,6 +3554,10 @@ def cmd_scan(args: argparse.Namespace) -> int:
 
 def cmd_serve(args: argparse.Namespace) -> int:
     tracking_enabled = not args.no_window_tracking
+    resolved_registry_path = resolve_repo_registry_path(
+        args.projects_root,
+        args.repo_registry,
+    )
     sqlite3_cli_path = shutil.which("sqlite3")
     sqlite3_cli_status = (
         f"available: {sqlite3_cli_path}"
@@ -2902,7 +3565,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
         else "missing: install sqlite3 for CLI DB inspection"
     )
     log_startup(
-        f"startup requested: host={args.host} port={args.port} db={args.db} projects_root={args.projects_root}"
+        f"startup requested: host={args.host} port={args.port} db={args.db} "
+        f"projects_root={args.projects_root} repo_registry={resolved_registry_path}"
     )
     log_startup(f"sqlite3 CLI: {sqlite3_cli_status}")
     if not sqlite3_cli_path:
@@ -2919,9 +3583,11 @@ def cmd_serve(args: argparse.Namespace) -> int:
             args.linear_team_id,
             chat_work_json=args.chat_work_json,
             venture_report_json=args.venture_report_json,
+            repo_registry_path=args.repo_registry,
         )
         log_startup(
             "scan complete: "
+            f"registered_repos={summary.get('registered_repos', 0)} "
             f"repos={summary.get('repos', 0)} "
             f"dirty_repos={summary.get('dirty_repos', 0)} "
             f"linear_tasks={summary.get('linear_tasks', 0)} "
@@ -2979,6 +3645,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
     HubHandler.db_path = args.db
     HubHandler.projects_root = args.projects_root
+    HubHandler.repo_registry_path = resolved_registry_path
     HubHandler.linear_team_id = args.linear_team_id
     HubHandler.codex_config_path = args.codex_config
     HubHandler.chat_work_json = args.chat_work_json
@@ -3035,6 +3702,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=DEFAULT_PROJECTS_ROOT,
         help=f"Projects root to inventory (default: {DEFAULT_PROJECTS_ROOT})",
+    )
+    p.add_argument(
+        "--repo-registry",
+        type=Path,
+        default=None,
+        help=(
+            "Continuity repo-registry.json path (default: "
+            "<projects-root>/continuity/repo-registry.json; "
+            "env: CONTINUITY_REPO_REGISTRY)"
+        ),
     )
     p.add_argument(
         "--linear-team-id",

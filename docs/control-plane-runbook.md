@@ -52,6 +52,13 @@ PROJECTS_DIR="$HOME/projects" ./fleetctl health
 ./fleetctl hub-serve --projects-root "$HOME/projects"
 ```
 
+Control Hub resolves the canonical registry at
+`$HOME/projects/continuity/repo-registry.json` for this root. Use
+`--repo-registry <path>` or `CONTINUITY_REPO_REGISTRY` only when continuity is
+intentionally checked out elsewhere. Treat `repo_registry_status=unavailable`
+or `invalid` as degraded canonical identity: local observations may refresh, but
+the last valid canonical projection and operator fields are preserved.
+
 A missing, inaccessible, non-directory, or filesystem-root scan target must be
 refused before the Control Hub database is opened.
 
