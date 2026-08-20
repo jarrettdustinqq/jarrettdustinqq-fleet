@@ -47,6 +47,15 @@ missing recommendations. A verified complete scan stale-marks unseen repository
 rows with a 30-day review grace instead of deleting them, preserving
 `focus_level`, `next_action`, and prior observations.
 
+Control Hub also imports canonical repository identity from
+`<projects-root>/continuity/repo-registry.json` by default. Override the path with
+`--repo-registry` or `CONTINUITY_REPO_REGISTRY`. Registry input is validated and
+applied atomically: missing or malformed input preserves prior canonical rows and
+operator management fields. Registered repositories remain visible without a
+local checkout, while each checkout or linked worktree remains a separate local
+observation mapped to the same `owner/repo` identity. Remote URLs are stored
+without embedded credentials or query data.
+
 Example using a dedicated managed root:
 
 ```bash

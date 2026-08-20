@@ -5,6 +5,8 @@ Local-first inventory agent + dashboard to manage active work in one place.
 ## What It Inventories
 
 - Local git repositories under `~/projects` by default.
+- Canonical registered-repository identity from the continuity
+  `repo-registry.json`, including registered repositories with no local checkout.
 - Repo health: branch, dirty status, ahead/behind, last commit age, remote URL.
 - Optional Linear assigned issues (when `LINEAR_API_KEY` is set).
 - Chat workstream synthesis reports from `chat-agent` (`chat_work_brief.json`).
@@ -24,6 +26,7 @@ Local-first inventory agent + dashboard to manage active work in one place.
 # select an explicit inventory root and database
 ./fleetctl hub-scan \
   --projects-root "$HOME/agent_workspace" \
+  --repo-registry "$HOME/agent_workspace/continuity/repo-registry.json" \
   --db "$HOME/.local/share/fleet-control-hub/control_hub.db"
 
 # scan then start local dashboard at http://127.0.0.1:8765
@@ -52,6 +55,29 @@ and partial outcomes, counts, and bounded error summaries are recorded in
 `repo_scan_runs` and `meta`; a failed root is refused before either is opened.
 Stale rows retain operator-owned `focus_level` and `next_action`; the default
 review grace is 30 days and no automatic deletion is performed.
+
+The canonical registry path defaults to
+`<projects-root>/continuity/repo-registry.json`. It can be overridden with
+`--repo-registry` or `CONTINUITY_REPO_REGISTRY`. Registry schema v1 is loaded
+with a bounded file size and all-or-nothing validation. An unavailable,
+unsupported, duplicate, or malformed registry never replaces prior canonical
+rows and never resolves prior recommendations. The scan summary, `meta`, and
+`repo_scan_runs` record registry status and bounded errors separately from local
+filesystem observation status.
+
+Registered repositories and local observations are distinct:
+
+- `registered_repos` holds canonical `owner/repo` identity, classification,
+  lifecycle state, registry guidance, and operator-owned focus/next-action fields.
+- `repos` remains the path-keyed local checkout/worktree observation table.
+- HTTPS, SSH, and SCP-style GitHub origins are normalized for identity matching.
+- Multiple linked worktrees map to one canonical row and remain multiple local
+  observations.
+- Registered repositories remain visible when no checkout is present.
+- Old path-keyed management fields are migrated into the canonical row once and
+  remain preserved locally for compatibility.
+- Stored/displayed remote URLs omit embedded credentials, queries, and fragments;
+  existing database rows are sanitized during schema initialization.
 
 Direct guarded usage:
 
@@ -111,6 +137,8 @@ When enabled, only non-completed and non-canceled assigned issues are imported.
 ## Dashboard Features
 
 - Repository table with editable `focus_level` (0-3) and `next_action`.
+- Canonical registry table with separate editable operator focus and next action,
+  plus active/total local checkout counts.
 - Task/workstream table with editable `done` and `notes` (Linear + chat + venture).
 - Recommendation table with open/done tracking.
 - Live Focus panel with agenda title, app, location, in-window summary, last step, and next step.
@@ -129,8 +157,12 @@ When enabled, only non-completed and non-canceled assigned issues are imported.
   `jarrettdustinqq/continuity`.
 - `repos.inventory_status`, `last_seen_at`, and `missing_since` distinguish
   observed rows from stale observations without erasing operator context.
+- `registered_repos` separates canonical identity and operator management state
+  from checkout/worktree observations. Registry removals mark a row absent rather
+  than deleting it.
 - `repo_scan_runs` stores the completeness outcome, observed/stale counts, and
-  bounded error details for each committed repository scan.
+  bounded error details for each committed repository scan, together with the
+  independently recorded registry import outcome.
 
 ## Recommended Entry Point
 

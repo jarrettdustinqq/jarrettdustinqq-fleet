@@ -40,6 +40,16 @@ def add_common_inventory_options(parser: argparse.ArgumentParser) -> None:
         help=f"Projects root to inventory (default: {hub.DEFAULT_PROJECTS_ROOT})",
     )
     parser.add_argument(
+        "--repo-registry",
+        type=Path,
+        default=None,
+        help=(
+            "Continuity repo-registry.json path (default: "
+            "<projects-root>/continuity/repo-registry.json; "
+            "env: CONTINUITY_REPO_REGISTRY)"
+        ),
+    )
+    parser.add_argument(
         "--linear-team-id",
         default=os.environ.get("LINEAR_TEAM_ID"),
         help="Optional Linear team ID filter. Defaults to LINEAR_TEAM_ID env.",
@@ -172,6 +182,7 @@ def guarded_run_scan(
     *,
     chat_work_json: Path = hub.DEFAULT_CHAT_WORK_JSON,
     venture_report_json: Path = hub.DEFAULT_VENTURE_REPORT_JSON,
+    repo_registry_path: Path | None = None,
 ) -> dict[str, int | str]:
     """Run the core scanner only after validating the observation boundary.
 
@@ -189,6 +200,7 @@ def guarded_run_scan(
         linear_team_id,
         chat_work_json=chat_work_json,
         venture_report_json=venture_report_json,
+        repo_registry_path=repo_registry_path,
     )
 
 
