@@ -257,8 +257,11 @@ class ControlHubRuntimeTests(unittest.TestCase):
         self.create_database()
         created = runtime.create_backup(self.config_path, self.identity)
         backup_path = Path(created["backup"])
-        with backup_path.open("ab") as handle:
-            handle.write(b"tamper")
+        with backup_path.open("r+b") as handle:
+            original = handle.read(1)
+            self.assertEqual(len(original), 1)
+            handle.seek(0)
+            handle.write(bytes([original[0] ^ 0xFF]))
 
         with self.assertRaisesRegex(
             runtime.RuntimeContractError,
