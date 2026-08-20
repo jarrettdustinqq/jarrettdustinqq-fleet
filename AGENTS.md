@@ -16,10 +16,12 @@ Keep `fleet` as a low-friction control plane for:
 3. Run validation after edits:
    - `bash -n bootstrap.sh healthcheck.sh install_nix.sh fleetctl`
    - `shellcheck bootstrap.sh healthcheck.sh install_nix.sh fleetctl ops/seed_linear_issues.sh`
-   - `python3 -m py_compile ops/control_hub_agent.py`
+   - `python3 -m py_compile ops/chat_work_agent.py ops/control_hub_agent.py ops/control_hub_safe_entry.py ops/control_hub_runtime.py ops/mission_control_agent.py ops/venture_autonomy_agent.py`
 4. If changing Control Hub behavior, run:
    - `./fleetctl hub-scan`
-5. Keep docs aligned with behavior (`README.md` + relevant file in `docs/`).
+5. If changing the runtime/state contract, run as a non-root user:
+   - `python3 tests/control_hub_non_root_smoke.py`
+6. Keep docs aligned with behavior (`README.md` + relevant file in `docs/`).
 
 ## Style Constraints
 

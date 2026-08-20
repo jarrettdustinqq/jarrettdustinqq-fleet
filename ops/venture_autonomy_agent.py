@@ -20,7 +20,13 @@ from typing import Any
 DEFAULT_ROOTS = [
     Path.home(),
 ]
-DEFAULT_STATE_DIR = Path.home() / ".local" / "share" / "fleet-control-hub"
+DEFAULT_DATA_HOME = Path(
+    os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share"
+).expanduser()
+DEFAULT_STATE_DIR = Path(
+    os.environ.get("FLEET_CONTROL_HUB_STATE_DIR")
+    or DEFAULT_DATA_HOME / "fleet-control-hub"
+).expanduser()
 DEFAULT_MARKDOWN_OUT = DEFAULT_STATE_DIR / "venture_autonomy_brief.md"
 DEFAULT_JSON_OUT = DEFAULT_STATE_DIR / "venture_autonomy_report.json"
 DEFAULT_CODEX_PROMPT_OUT = DEFAULT_STATE_DIR / "venture_autonomy_codex_prompt.txt"

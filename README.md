@@ -16,6 +16,7 @@ Small bootstrap toolkit for setting up a controller/dev node quickly.
 - `./fleetctl mission-control [options]`: Run chat-agent + venture-agent, then launch the unified Control Hub workflow.
 - `./fleetctl hub-scan`: Build/update local Control Hub inventory DB.
 - `./fleetctl hub-serve`: Scan + run local interactive Control Hub dashboard with startup diagnostics (scan progress, sqlite3 CLI availability, bind target failures), live tracking (Wayland: `swaymsg`/`hyprctl`, X11: `xdotool`/`xprop`), agenda last/next-step guidance, an interaction helper agent, and a mode-efficiency agent that recommends lower reasoning mode for obvious/simple tasks (manual apply button + optional auto-apply with stability threshold).
+- `./fleetctl hub-runtime`: Bind one non-root operator identity and authoritative private state directory; run guarded scans/serving, verified SQLite backup/restore, migration, and a systemd user service/timer.
 - `./fleetctl shell`: Enter the flake dev shell (requires Nix).
 
 ## Repository List
@@ -65,6 +66,17 @@ local checkout, while each checkout or linked worktree remains a separate local
 observation mapped to the same `owner/repo` identity. Remote URLs are stored
 without embedded credentials or query data.
 
+The supported background runtime is explicitly non-root and identity-bound.
+`./fleetctl hub-runtime configure` records the current UID/GID/user, reviewed
+root set, canonical registry path, loopback bind, and one authoritative private
+state directory. Subsequent runtime commands refuse UID 0, identity mismatch,
+unsafe ownership/modes, symlinks, and ambiguous root configuration. The generated
+systemd user service has no `User=` override and uses `UMask=0077`; its daily
+backup timer creates verified SQLite backups without deleting old backups.
+
+See `docs/control-hub-runtime.md` for configuration, migration, restore, service,
+and host-proof procedures.
+
 Example using a dedicated managed root:
 
 ```bash
@@ -80,8 +92,9 @@ PROJECTS_DIR="$HOME/projects" ./fleetctl health
 bash -n bootstrap.sh healthcheck.sh install_nix.sh fleetctl ops/seed_linear_issues.sh tests/test_healthcheck.sh
 shellcheck bootstrap.sh healthcheck.sh install_nix.sh fleetctl ops/seed_linear_issues.sh tests/test_healthcheck.sh
 bash tests/test_healthcheck.sh
-python3 -m py_compile ops/control_hub_agent.py ops/control_hub_safe_entry.py ops/mission_control_agent.py
+python3 -m py_compile ops/chat_work_agent.py ops/control_hub_agent.py ops/control_hub_safe_entry.py ops/control_hub_runtime.py ops/mission_control_agent.py ops/venture_autonomy_agent.py tests/control_hub_non_root_smoke.py
 python3 -m unittest discover -s tests -p 'test_*.py' -v
+python3 tests/control_hub_non_root_smoke.py  # must run as non-root
 ```
 
 Remote access agent examples:
@@ -127,6 +140,7 @@ Tip: in interactive terminals, `--auto --discover` now shows top VPS candidates 
 
 - `docs/control-plane-runbook.md`: bootstrap, operations, and incident handling.
 - `docs/control-hub-agent.md`: local inventory + dashboard usage.
+- `docs/control-hub-runtime.md`: non-root identity, state, service, migration, and verified recovery contract.
 - `docs/mission-control-agent.md`: one-command orchestration for chat/venture/hub inventory.
 - `docs/control-hub-architecture.md`: approach comparison and chosen structure.
 - `docs/venture-agent.md`: repo autonomy scoring and optimization queue generation.

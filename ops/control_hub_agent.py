@@ -31,7 +31,14 @@ from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 
 APP_NAME = "fleet-control-hub"
-DEFAULT_DB = Path.home() / ".local" / "share" / APP_NAME / "control_hub.db"
+DEFAULT_DATA_HOME = Path(
+    os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share"
+).expanduser()
+DEFAULT_STATE_DIR = Path(
+    os.environ.get("FLEET_CONTROL_HUB_STATE_DIR")
+    or DEFAULT_DATA_HOME / APP_NAME
+).expanduser()
+DEFAULT_DB = DEFAULT_STATE_DIR / "control_hub.db"
 DEFAULT_PROJECTS_ROOT = Path.home() / "projects"
 LINEAR_API_URL = "https://api.linear.app/graphql"
 DEFAULT_WINDOW_POLL_SECONDS = 2.0
@@ -42,7 +49,6 @@ DEFAULT_OCR_MAX_CHARS = 1200
 DEFAULT_MODE_AGENT_NAME = "mode-efficiency-agent"
 DEFAULT_CODEX_CONFIG = Path.home() / ".codex" / "config.toml"
 DEFAULT_MODE_STABILITY_THRESHOLD = 2
-DEFAULT_STATE_DIR = Path.home() / ".local" / "share" / APP_NAME
 DEFAULT_CHAT_WORK_JSON = DEFAULT_STATE_DIR / "chat_work_brief.json"
 DEFAULT_VENTURE_REPORT_JSON = DEFAULT_STATE_DIR / "venture_autonomy_report.json"
 CONFIGURED_REPO_REGISTRY = os.environ.get("CONTINUITY_REPO_REGISTRY", "").strip()

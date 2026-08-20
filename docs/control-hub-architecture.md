@@ -92,6 +92,26 @@ unavailable or invalid input preserves the last valid projection and operator
 state. A canonical repository can exist without a checkout, and any number of
 local checkout/worktree observations can map to the same `owner/repo` identity.
 
+
+## Runtime and State Boundary
+
+The supported background process is one systemd user service bound to the
+non-root UID/GID/user recorded in a private runtime config. Its single
+authoritative SQLite path is inside a mode-`0700` state directory; config,
+database, sidecars, backups, and manifests are owner-bound and private. The
+launcher refuses UID 0, identity drift, unsafe ownership/modes, symlinks, and
+non-loopback/privileged binds.
+
+The service invokes the guarded multi-root `scan-serve` path. A separate user
+timer creates online SQLite backups with identity, size, SHA-256, and integrity
+evidence. Migration and restore refuse overwrite and preserve the source/backup;
+there is no automatic retention deletion. See `docs/control-hub-runtime.md`.
+
+CI exercises configure, scan, backup, verify, restore, unit rendering, and an
+HTTP dashboard response while explicitly asserting a non-root runner. This
+proves the repository contract but cannot substitute for current host ownership,
+service, or process evidence.
+
 ## Next Extensions
 
 1. GitHub API enrichment: open PR counts, stale branches, review backlog.

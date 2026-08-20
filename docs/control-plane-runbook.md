@@ -71,6 +71,31 @@ preserved. Keep an unavailable root in the command to record a temporary
 failure. Omitting a previously configured root explicitly marks that root and
 its observations removed without deleting them; re-adding it is reversible.
 
+
+### Identity-Bound Control Hub Service
+
+Use one intended non-root operator identity. Do not install the Control Hub as a
+system/root service.
+
+```bash
+id
+./fleetctl hub-runtime configure \
+  --projects-root "$HOME/projects" \
+  --repo-registry "$HOME/projects/continuity/repo-registry.json"
+./fleetctl hub-runtime check
+./fleetctl hub-runtime scan
+./fleetctl hub-runtime backup
+./fleetctl hub-runtime install-user-service
+systemctl --user status fleet-control-hub.service --no-pager
+systemctl --user status fleet-control-hub-backup.timer --no-pager
+```
+
+The runtime config binds the current UID/GID/user to one private authoritative
+state directory. The generated service is a systemd user unit with no `User=`
+override. The backup timer never purges state. Follow
+`docs/control-hub-runtime.md` for migration, manifest verification, restore, and
+the host-evidence checklist.
+
 ## Weekly Reliability Review
 
 1. Confirm patch baseline (`apt list --upgradable`).
@@ -129,6 +154,16 @@ For SSH:
 4. Correct the configured root and rerun the same guarded command.
 5. Existing database state should remain untouched after refusal.
 
+
+### Control Hub runtime refusal
+
+1. Run `id` and confirm the effective UID is nonzero and matches the configured operator.
+2. Run `./fleetctl hub-runtime check` and preserve the exact refusal.
+3. Inspect owner/mode evidence for the config, state directory, DB, and sidecars.
+4. Do not use root, `sudo`, automatic `chown`, or a second database to bypass an identity mismatch.
+5. Stop the user service before migration or restore; never overwrite an existing authoritative DB or orphaned `-wal`/`-shm` sidecar.
+6. Verify a backup manifest before recovery, then rerun check, scan, and the loopback dashboard probe.
+
 ## Recovery From Clean Machine
 
 1. Clone or restore the Fleet repository.
@@ -137,4 +172,6 @@ For SSH:
 4. Run the bootstrap procedure in order.
 5. Configure GitHub HTTPS authentication or add the SSH key to GitHub.
 6. Validate required repositories against the continuity registry.
-7. Run guarded Control Hub inventory using the reviewed root.
+7. Configure the identity-bound Control Hub runtime under the intended non-root user.
+8. Run runtime check, guarded scan, verified backup, and loopback serve proof.
+9. Install the systemd user service/timer only after those checks pass.
