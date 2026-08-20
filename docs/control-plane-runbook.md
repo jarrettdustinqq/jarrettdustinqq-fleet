@@ -50,6 +50,11 @@ PROJECTS_DIR="$HOME/projects" ./fleetctl health
 ```bash
 ./fleetctl hub-scan --projects-root "$HOME/projects"
 ./fleetctl hub-serve --projects-root "$HOME/projects"
+
+# Optional second independent root; repeat the option for more.
+./fleetctl hub-scan \
+  --projects-root "$HOME/projects" \
+  --additional-projects-root "$HOME/control_station"
 ```
 
 Control Hub resolves the canonical registry at
@@ -59,8 +64,12 @@ intentionally checked out elsewhere. Treat `repo_registry_status=unavailable`
 or `invalid` as degraded canonical identity: local observations may refresh, but
 the last valid canonical projection and operator fields are preserved.
 
-A missing, inaccessible, non-directory, or filesystem-root scan target must be
-refused before the Control Hub database is opened.
+If every configured root is missing, inaccessible, non-directory, or unsafe,
+the scan is refused before the Control Hub database is opened. With mixed root
+health, complete roots refresh only their own observations and failed roots are
+preserved. Keep an unavailable root in the command to record a temporary
+failure. Omitting a previously configured root explicitly marks that root and
+its observations removed without deleting them; re-adding it is reversible.
 
 ## Weekly Reliability Review
 

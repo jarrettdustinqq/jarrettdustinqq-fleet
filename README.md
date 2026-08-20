@@ -41,11 +41,20 @@ broad workspace merely because that directory contains repositories; an outer
 Git repository can mask or distort nested inventory.
 
 Control Hub repository scans expose `complete`, `partial`, or `failed`
-observation status. Failed scans refuse before opening the database. Partial
-scans may refresh observed rows but never reconcile missing rows or resolve
-missing recommendations. A verified complete scan stale-marks unseen repository
-rows with a 30-day review grace instead of deleting them, preserving
-`focus_level`, `next_action`, and prior observations.
+observation status per configured root. Add independent roots with repeated
+`--additional-projects-root <path>` options. If every configured root fails, the
+scan refuses before opening the database. If one root fails while another is
+observable, successful roots refresh only their own evidence and the failed
+root's prior rows remain untouched. Partial roots never reconcile missing rows
+or resolve missing recommendations. A verified complete root stale-marks only
+its own unseen rows with a 30-day review grace instead of deleting them,
+preserving `focus_level`, `next_action`, and prior observations.
+
+Omitting a previously configured additional root is an explicit configuration
+removal, not a failed observation. Its rows become `root-removed` and remain
+recoverable; re-adding the root restores observation. Duplicate roots are
+de-duplicated, overlapping parent/child roots are refused as ambiguous, and the
+total configured root count is bounded.
 
 Control Hub also imports canonical repository identity from
 `<projects-root>/continuity/repo-registry.json` by default. Override the path with
@@ -60,6 +69,9 @@ Example using a dedicated managed root:
 
 ```bash
 PROJECTS_DIR="$HOME/projects" ./fleetctl health
+./fleetctl hub-scan \
+  --projects-root "$HOME/projects" \
+  --additional-projects-root "$HOME/control_station"
 ```
 
 ## Local Validation

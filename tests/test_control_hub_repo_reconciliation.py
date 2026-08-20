@@ -121,12 +121,14 @@ class RepoReconciliationTests(unittest.TestCase):
         self,
         projects_root: Path,
         *,
+        additional_projects_roots: tuple[Path, ...] = (),
         repo_registry_path: Path | None = None,
     ) -> dict[str, int | str]:
         return HUB.run_scan(
             self.db_path,
             projects_root,
             None,
+            additional_projects_roots=additional_projects_roots,
             chat_work_json=self.chat_report,
             venture_report_json=self.venture_report,
             repo_registry_path=(
@@ -271,6 +273,32 @@ class RepoReconciliationTests(unittest.TestCase):
         self.assertEqual(result.repositories, ())
         self.assertIn("blocked subtree", result.errors[0])
 
+    def test_multi_root_errors_are_bounded_with_omission_marker(self) -> None:
+        first_root = self.root / "first-root"
+        second_root = self.root / "second-root"
+        errors = tuple(f"failure {index}" for index in range(60))
+
+        def partial(root: Path) -> object:
+            return HUB.RepoDiscoveryResult(
+                HUB.REPO_SCAN_PARTIAL,
+                (),
+                errors,
+                root,
+            )
+
+        with mock.patch.object(HUB, "discover_git_repos", side_effect=partial):
+            result = HUB.discover_git_roots(
+                first_root,
+                (second_root,),
+            )
+
+        self.assertEqual(result.status, HUB.REPO_SCAN_PARTIAL)
+        self.assertEqual(len(result.errors), HUB.MAX_REPO_SCAN_ERRORS)
+        self.assertEqual(
+            result.errors[-1],
+            "additional repository discovery errors omitted",
+        )
+
     def test_malformed_git_file_is_partial_not_authoritative_empty(self) -> None:
         projects_root = self.root / "projects"
         candidate = projects_root / "broken-worktree"
@@ -389,6 +417,304 @@ class RepoReconciliationTests(unittest.TestCase):
         self.assertNotIn("do-not-store", json.dumps([dict(row) for row in observations]))
         self.assertEqual(state["registered_repos"][0]["checkout_count"], 2)
         self.assertEqual(state["registered_repos"][0]["active_checkout_count"], 2)
+
+    def test_same_repository_across_two_roots_has_one_canonical_identity(self) -> None:
+        first_root = self.root / "first-root"
+        second_root = self.root / "second-root"
+        first_checkout = first_root / "first-checkout"
+        second_checkout = second_root / "second-checkout"
+        remote = "git@github.com:jarrettdustinqq/shared-repository.git"
+        self._init_repo(first_checkout, remote)
+        self._init_repo(second_checkout, remote)
+        registry_path = self._write_registry(
+            [self._registry_repo("jarrettdustinqq/shared-repository")]
+        )
+
+        summary = self._run_scan(
+            first_root,
+            additional_projects_roots=(second_root,),
+            repo_registry_path=registry_path,
+        )
+
+        conn = HUB.db_connect(self.db_path)
+        observations = conn.execute(
+            """
+            SELECT path, observation_root, registry_name
+            FROM repos ORDER BY path
+            """
+        ).fetchall()
+        canonical = conn.execute(
+            """
+            SELECT registry_name
+            FROM registered_repos
+            """
+        ).fetchall()
+        state = HUB.query_dashboard_state(conn)
+        conn.close()
+
+        self.assertEqual(summary["repo_scan_status"], HUB.REPO_SCAN_COMPLETE)
+        self.assertEqual(summary["repo_roots"], 2)
+        self.assertEqual(summary["repo_roots_complete"], 2)
+        self.assertEqual(summary["repos"], 2)
+        self.assertEqual(
+            {row["observation_root"] for row in observations},
+            {str(first_root.resolve()), str(second_root.resolve())},
+        )
+        self.assertEqual(
+            {row["registry_name"] for row in observations},
+            {"jarrettdustinqq/shared-repository"},
+        )
+        self.assertEqual(
+            [row["registry_name"] for row in canonical],
+            ["jarrettdustinqq/shared-repository"],
+        )
+        self.assertEqual(state["registered_repos"][0]["checkout_count"], 2)
+        self.assertEqual(len(state["repo_roots"]), 2)
+
+    def test_failed_root_preserves_itself_while_complete_root_reconciles(self) -> None:
+        first_root = self.root / "first-root"
+        second_root = self.root / "second-root"
+        first_checkout = first_root / "first-checkout"
+        second_checkout = second_root / "second-checkout"
+        self._init_repo(first_checkout)
+        self._init_repo(second_checkout)
+        registry_path = self._write_registry([])
+        self._run_scan(
+            first_root,
+            additional_projects_roots=(second_root,),
+            repo_registry_path=registry_path,
+        )
+
+        conn = HUB.db_connect(self.db_path)
+        conn.execute(
+            """
+            UPDATE repos
+            SET focus_level = 3, next_action = 'preserve failed-root context'
+            WHERE path = ?
+            """,
+            (str(second_checkout.resolve()),),
+        )
+        conn.commit()
+        conn.close()
+        first_checkout.rename(self.root / "first-checkout-offline")
+        second_root.rename(self.root / "second-root-offline")
+
+        summary = self._run_scan(
+            first_root,
+            additional_projects_roots=(second_root,),
+            repo_registry_path=registry_path,
+        )
+
+        conn = sqlite3.connect(self.db_path)
+        first = conn.execute(
+            """
+            SELECT inventory_status
+            FROM repos WHERE path = ?
+            """,
+            (str(first_checkout.resolve()),),
+        ).fetchone()
+        second = conn.execute(
+            """
+            SELECT inventory_status, focus_level, next_action
+            FROM repos WHERE path = ?
+            """,
+            (str(second_checkout.resolve()),),
+        ).fetchone()
+        roots = conn.execute(
+            """
+            SELECT projects_root, configured, last_scan_status, removed_at
+            FROM repo_observation_roots ORDER BY projects_root
+            """
+        ).fetchall()
+        latest_root_runs = conn.execute(
+            """
+            SELECT projects_root, status, stale_repo_count
+            FROM repo_root_scan_runs
+            WHERE scan_run_id = (SELECT MAX(id) FROM repo_scan_runs)
+            ORDER BY projects_root
+            """
+        ).fetchall()
+        conn.close()
+
+        self.assertEqual(summary["repo_scan_status"], HUB.REPO_SCAN_PARTIAL)
+        self.assertEqual(summary["repo_roots_complete"], 1)
+        self.assertEqual(summary["repo_roots_failed"], 1)
+        self.assertEqual(summary["stale_repos"], 1)
+        self.assertEqual(first, ("stale",))
+        self.assertEqual(
+            second,
+            ("active", 3, "preserve failed-root context"),
+        )
+        self.assertEqual(
+            roots,
+            [
+                (str(first_root.resolve()), 1, HUB.REPO_SCAN_COMPLETE, None),
+                (str(second_root.resolve()), 1, HUB.REPO_SCAN_FAILED, None),
+            ],
+        )
+        self.assertEqual(
+            latest_root_runs,
+            [
+                (str(first_root.resolve()), HUB.REPO_SCAN_COMPLETE, 1),
+                (str(second_root.resolve()), HUB.REPO_SCAN_FAILED, 0),
+            ],
+        )
+
+    def test_unavailable_symlink_root_keeps_stable_configured_identity(self) -> None:
+        target_root = self.root / "target-root"
+        configured_root = self.root / "configured-root"
+        checkout = target_root / "checkout"
+        self._init_repo(checkout)
+        configured_root.symlink_to(target_root, target_is_directory=True)
+        registry_path = self._write_registry([])
+        self._run_scan(configured_root, repo_registry_path=registry_path)
+        configured_root.rename(self.root / "configured-root-offline")
+        healthy_root = self.root / "healthy-root"
+        healthy_root.mkdir()
+
+        summary = self._run_scan(
+            configured_root,
+            additional_projects_roots=(healthy_root,),
+            repo_registry_path=registry_path,
+        )
+
+        conn = sqlite3.connect(self.db_path)
+        observation = conn.execute(
+            """
+            SELECT observation_root, inventory_status
+            FROM repos WHERE path = ?
+            """,
+            (str(checkout.resolve()),),
+        ).fetchone()
+        configured = conn.execute(
+            """
+            SELECT configured, last_scan_status, removed_at
+            FROM repo_observation_roots WHERE projects_root = ?
+            """,
+            (str(configured_root.absolute()),),
+        ).fetchone()
+        resolved_target_alias = conn.execute(
+            """
+            SELECT COUNT(*) FROM repo_observation_roots WHERE projects_root = ?
+            """,
+            (str(target_root.resolve()),),
+        ).fetchone()[0]
+        conn.close()
+
+        self.assertEqual(summary["repo_scan_status"], HUB.REPO_SCAN_PARTIAL)
+        self.assertEqual(summary["repo_roots_failed"], 1)
+        self.assertEqual(summary["repo_roots_removed"], 0)
+        self.assertEqual(
+            observation,
+            (str(configured_root.absolute()), "active"),
+        )
+        self.assertEqual(configured, (1, HUB.REPO_SCAN_FAILED, None))
+        self.assertEqual(resolved_target_alias, 0)
+
+    def test_omitted_root_is_marked_removed_and_can_be_readded(self) -> None:
+        first_root = self.root / "first-root"
+        second_root = self.root / "second-root"
+        first_checkout = first_root / "first-checkout"
+        second_checkout = second_root / "second-checkout"
+        self._init_repo(first_checkout)
+        self._init_repo(second_checkout)
+        registry_path = self._write_registry([])
+        self._run_scan(
+            first_root,
+            additional_projects_roots=(second_root,),
+            repo_registry_path=registry_path,
+        )
+
+        removed_summary = self._run_scan(
+            first_root,
+            repo_registry_path=registry_path,
+        )
+
+        conn = sqlite3.connect(self.db_path)
+        removed_observation = conn.execute(
+            """
+            SELECT inventory_status, root_removed_at
+            FROM repos WHERE path = ?
+            """,
+            (str(second_checkout.resolve()),),
+        ).fetchone()
+        removed_root = conn.execute(
+            """
+            SELECT configured, removed_at
+            FROM repo_observation_roots WHERE projects_root = ?
+            """,
+            (str(second_root.resolve()),),
+        ).fetchone()
+        removed_history = conn.execute(
+            """
+            SELECT status
+            FROM repo_root_scan_runs
+            WHERE scan_run_id = (SELECT MAX(id) FROM repo_scan_runs)
+              AND projects_root = ?
+            """,
+            (str(second_root.resolve()),),
+        ).fetchone()
+        conn.close()
+
+        self.assertEqual(removed_summary["repo_roots_removed"], 1)
+        self.assertEqual(removed_summary["root_removed_repos"], 1)
+        self.assertEqual(removed_observation[0], "root-removed")
+        self.assertIsNotNone(removed_observation[1])
+        self.assertEqual(removed_root[0], 0)
+        self.assertIsNotNone(removed_root[1])
+        self.assertEqual(removed_history, (HUB.REPO_ROOT_REMOVED,))
+
+        readded_summary = self._run_scan(
+            first_root,
+            additional_projects_roots=(second_root,),
+            repo_registry_path=registry_path,
+        )
+        conn = sqlite3.connect(self.db_path)
+        readded_observation = conn.execute(
+            """
+            SELECT inventory_status, root_removed_at
+            FROM repos WHERE path = ?
+            """,
+            (str(second_checkout.resolve()),),
+        ).fetchone()
+        readded_root = conn.execute(
+            """
+            SELECT configured, last_scan_status, removed_at
+            FROM repo_observation_roots WHERE projects_root = ?
+            """,
+            (str(second_root.resolve()),),
+        ).fetchone()
+        conn.close()
+
+        self.assertEqual(readded_summary["repo_roots_removed"], 0)
+        self.assertEqual(readded_summary["root_removed_repos"], 0)
+        self.assertEqual(readded_observation, ("active", None))
+        self.assertEqual(readded_root, (1, HUB.REPO_SCAN_COMPLETE, None))
+
+    def test_overlapping_roots_refuse_before_database_open(self) -> None:
+        projects_root = self.root / "projects"
+        nested_root = projects_root / "nested"
+        nested_root.mkdir(parents=True)
+
+        with self.assertRaisesRegex(
+            HUB.RepoDiscoveryError,
+            "overlapping repository observation roots",
+        ):
+            self._run_scan(
+                projects_root,
+                additional_projects_roots=(nested_root,),
+            )
+
+        self.assertFalse(self.db_path.exists())
+
+    def test_all_failed_roots_refuse_before_database_open(self) -> None:
+        with self.assertRaises(HUB.RepoDiscoveryError):
+            self._run_scan(
+                self.root / "missing-first",
+                additional_projects_roots=(self.root / "missing-second",),
+            )
+
+        self.assertFalse(self.db_path.exists())
 
     def test_invalid_registry_preserves_prior_canonical_and_operator_state(self) -> None:
         projects_root = self.root / "projects"
@@ -708,7 +1034,10 @@ class RepoReconciliationTests(unittest.TestCase):
         self.assertEqual(tuple(recommendation), ("open",))
         self.assertEqual(tuple(scan_run), ("complete", 1, 0))
         self.assertIn("registry_name", repo_columns)
+        self.assertIn("observation_root", repo_columns)
+        self.assertIn("root_removed_at", repo_columns)
         self.assertIn("repo_registry_status", scan_columns)
+        self.assertIn("projects_roots_json", scan_columns)
 
     def test_init_migration_sanitizes_credentialed_remote_urls(self) -> None:
         self._seed_repo()

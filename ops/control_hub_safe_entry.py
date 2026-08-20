@@ -2,8 +2,9 @@
 """Safe command-line entry point for Fleet Control Hub operations.
 
 This wrapper keeps scan-related options on the subcommands used by ``fleetctl``
-and refuses every inventory scan when the configured projects root is unavailable.
-The underlying dashboard implementation remains in ``control_hub_agent.py``.
+and refuses inventory when no configured projects root can be observed. Healthy
+roots remain independently usable when a peer root is unavailable. The
+underlying dashboard implementation remains in ``control_hub_agent.py``.
 """
 
 from __future__ import annotations
@@ -38,6 +39,16 @@ def add_common_inventory_options(parser: argparse.ArgumentParser) -> None:
         type=Path,
         default=hub.DEFAULT_PROJECTS_ROOT,
         help=f"Projects root to inventory (default: {hub.DEFAULT_PROJECTS_ROOT})",
+    )
+    parser.add_argument(
+        "--additional-projects-root",
+        type=Path,
+        action="append",
+        default=[],
+        help=(
+            "Additional independent repository observation root; repeat for "
+            f"multiple roots (maximum {hub.MAX_PROJECTS_ROOTS} total)."
+        ),
     )
     parser.add_argument(
         "--repo-registry",
@@ -175,11 +186,32 @@ def projects_root_error(projects_root: Path) -> str | None:
     return None
 
 
+def projects_roots_refusal(
+    projects_root: Path,
+    additional_projects_roots: Sequence[Path] = (),
+) -> str | None:
+    """Refuse only invalid configuration or a set with no observable root."""
+
+    try:
+        roots = hub.normalize_projects_roots(
+            projects_root,
+            additional_projects_roots,
+        )
+    except hub.RepoDiscoveryError as exc:
+        return str(exc)
+
+    errors = [error for root in roots if (error := projects_root_error(root))]
+    if len(errors) == len(roots):
+        return "; ".join(errors)
+    return None
+
+
 def guarded_run_scan(
     db_path: Path,
     projects_root: Path,
     linear_team_id: str | None,
     *,
+    additional_projects_roots: Sequence[Path] = (),
     chat_work_json: Path = hub.DEFAULT_CHAT_WORK_JSON,
     venture_report_json: Path = hub.DEFAULT_VENTURE_REPORT_JSON,
     repo_registry_path: Path | None = None,
@@ -191,13 +223,14 @@ def guarded_run_scan(
     directly after the server has already started.
     """
 
-    error = projects_root_error(projects_root)
+    error = projects_roots_refusal(projects_root, additional_projects_roots)
     if error:
         raise ScanRefusedError(error)
     return _CORE_RUN_SCAN(
         db_path,
         projects_root,
         linear_team_id,
+        additional_projects_roots=additional_projects_roots,
         chat_work_json=chat_work_json,
         venture_report_json=venture_report_json,
         repo_registry_path=repo_registry_path,
@@ -207,21 +240,30 @@ def guarded_run_scan(
 class SafeHubHandler(_CORE_HUB_HANDLER):
     """Dashboard handler that fails closed when the scan root disappears."""
 
+    def _send_scan_refusal(self, error: str) -> None:
+        payload = (
+            f"scan refused: {error}\n"
+            "existing database state was not opened or pruned.\n"
+        ).encode("utf-8")
+        self.send_response(HTTPStatus.SERVICE_UNAVAILABLE)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
     def do_POST(self) -> None:  # noqa: N802
         if self.path == "/scan":
-            error = projects_root_error(self.projects_root)
+            error = projects_roots_refusal(
+                self.projects_root,
+                getattr(self, "additional_projects_roots", ()),
+            )
             if error:
-                payload = (
-                    f"scan refused: {error}\n"
-                    "existing database state was not opened or pruned.\n"
-                ).encode("utf-8")
-                self.send_response(HTTPStatus.SERVICE_UNAVAILABLE)
-                self.send_header("Content-Type", "text/plain; charset=utf-8")
-                self.send_header("Content-Length", str(len(payload)))
-                self.end_headers()
-                self.wfile.write(payload)
+                self._send_scan_refusal(error)
                 return
-        super().do_POST()
+        try:
+            super().do_POST()
+        except (ScanRefusedError, hub.RepoDiscoveryError) as exc:
+            self._send_scan_refusal(str(exc))
 
 
 def install_runtime_guards() -> None:
@@ -236,7 +278,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     install_runtime_guards()
 
     if getattr(args, "scan_first", False):
-        error = projects_root_error(args.projects_root)
+        error = projects_roots_refusal(
+            args.projects_root,
+            args.additional_projects_root,
+        )
         if error:
             print(f"[control-hub] scan refused: {error}", file=sys.stderr)
             print(
@@ -245,7 +290,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 2
 
-    return int(args.func(args))
+    try:
+        return int(args.func(args))
+    except (ScanRefusedError, hub.RepoDiscoveryError) as exc:
+        print(f"[control-hub] scan refused: {exc}", file=sys.stderr)
+        print(
+            "[control-hub] existing database state was not opened or pruned.",
+            file=sys.stderr,
+        )
+        return 2
 
 
 if __name__ == "__main__":
