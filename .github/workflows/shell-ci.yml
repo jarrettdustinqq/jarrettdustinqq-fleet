@@ -45,7 +45,7 @@ jobs:
         run: bash tests/test_fleet_host_remediation.sh
 
       - name: Python syntax
-        run: python3 -m py_compile ops/chat_work_agent.py ops/control_hub_agent.py ops/control_hub_safe_entry.py ops/control_hub_runtime.py ops/mission_control_agent.py ops/venture_autonomy_agent.py tests/control_hub_non_root_smoke.py
+        run: python3 -m py_compile ops/chat_work_agent.py ops/control_hub_agent.py ops/control_hub_safe_entry.py ops/jacs_control_preflight.py ops/control_hub_runtime.py ops/mission_control_agent.py ops/venture_autonomy_agent.py tests/control_hub_non_root_smoke.py tests/test_jacs_control_preflight.py
 
       - name: Python tests
         run: python3 -m unittest discover -s tests -p 'test_*.py' -v
