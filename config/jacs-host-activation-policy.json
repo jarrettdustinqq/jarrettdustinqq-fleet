@@ -1,0 +1,29 @@
+{
+  "audited_wrapper_files": [
+    "fleetctl",
+    "ops/mission_control_agent.py",
+    "ops/control_hub_runtime.py"
+  ],
+  "canonical_writeback": "separate-connected-google-sheets-reconciliation-required",
+  "direct_agent_policy": "developer-library-only; non-executable; forbidden in service units, aliases, and host runbooks",
+  "forbidden_operational_commands": [
+    "python ops/control_hub_agent.py",
+    "python3 ops/control_hub_agent.py"
+  ],
+  "guard_symbol": "control_hub_safe_entry.guarded_run_scan",
+  "replay_journal_basename": "jacs_snapshot_receipts.jsonl",
+  "required_service_substrings": [
+    "fleetctl",
+    "hub-runtime serve --config"
+  ],
+  "schema_version": 1,
+  "snapshot_basename": "jacs_preflight.json",
+  "stale_journal_basename": "jacs_stale_events.jsonl",
+  "supported_operational_entrypoints": [
+    "fleetctl mission-control",
+    "fleetctl hub-scan",
+    "fleetctl hub-serve",
+    "fleetctl hub-runtime scan",
+    "fleetctl hub-runtime serve"
+  ]
+}

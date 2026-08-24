@@ -1,0 +1,29 @@
+{
+  "default_timezone": "America/Chicago",
+  "envelope": {
+    "authoritative_source_manifest": [
+      {"data_types": ["financial_balance", "generic"], "observed_at": "2026-08-24T07:59:35Z", "source_kind": "registry_projection", "source_ref": "google-sheets:jacs-registry:example"},
+      {"data_types": ["financial_balance"], "observed_at": "2026-08-24T07:59:37Z", "source_kind": "mystery_source", "source_ref": "finances:get_linked_accounts:example"},
+      {"data_types": ["automation_runtime"], "observed_at": "2026-08-24T07:59:39Z", "source_kind": "scheduler_runtime", "source_ref": "automations:peek:example"}
+    ],
+    "content_digest": "sha256:03d897c540c5dfdabbe35611eb57eb3823f49cea7bc5e282887d5406788eba36",
+    "expires_at": "2026-08-24T08:04:40Z",
+    "generated_at": "2026-08-24T07:59:40Z",
+    "max_age_seconds": 300,
+    "required_fact_keys": ["finance:checking:available"],
+    "required_state_keys": ["closure:primary"],
+    "schema_version": 2,
+    "snapshot_id": "jacs-example-unknown-0001"
+  },
+  "facts": [{"canonical_key": "finance:checking:available", "data_type": "financial_balance", "observed_at": "2026-08-24T07:59:37Z", "source_kind": "mystery_source", "value": 100.0}],
+  "live": {"automations": [{"email_enabled": false, "id": "auto-1", "is_enabled": true, "notifications_enabled": false, "schedule": "BEGIN:VEVENT\r\nRRULE:BYMINUTE=0;FREQ=DAILY;BYHOUR=8\r\nEND:VEVENT\r\n"}]},
+  "registry": {
+    "automations": [{"automation_id": "auto-1", "email_enabled": false, "enabled": true, "notifications_enabled": false, "timing": "BEGIN:VEVENT\nRRULE:FREQ=DAILY;BYHOUR=8;BYMINUTE=0\nEND:VEVENT"}],
+    "portfolio": {"primary_workflow_id": "WF.BUFFER.2000.v1"},
+    "states": [
+      {"canonical_key": "closure:primary", "observed_at": "2026-08-24T07:59:35Z", "stale_after": "2026-08-24T08:09:40Z", "state_id": "ST.CLOSURE.PRIMARY", "status": "VERIFIED", "value": "WF.BUFFER.2000.v1"},
+      {"authority_data_type": "financial_balance", "canonical_key": "finance:checking:available", "observed_at": "2026-08-24T07:59:35Z", "stale_after": "2026-08-24T08:04:40Z", "state_id": "ST.FIN.CHECKING.AVAILABLE", "status": "VERIFIED", "value": 100.0}
+    ]
+  },
+  "request": {"consequential": true, "declared_fact_reads": ["finance:checking:available"], "declared_state_reads": ["closure:primary"], "require_automation_sync": true, "require_notification_receipt": false, "workflow_id": "WF.JACS.HOST.ACTIVATION.EXAMPLE"}
+}

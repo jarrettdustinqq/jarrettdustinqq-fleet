@@ -1,0 +1,103 @@
+{
+  "default_timezone": "America/Chicago",
+  "envelope": {
+    "authoritative_source_manifest": [
+      {
+        "data_types": [
+          "financial_balance"
+        ],
+        "observed_at": "2026-08-24T05:28:00Z",
+        "source_kind": "financial_institution",
+        "source_ref": "finances:fixture-bank"
+      },
+      {
+        "data_types": [
+          "automation_runtime"
+        ],
+        "observed_at": "2026-08-24T05:28:00Z",
+        "source_kind": "scheduler_runtime",
+        "source_ref": "scheduler:fixture-live"
+      }
+    ],
+    "content_digest": "sha256:1495c75c823384c2acd635c8b1673ec7d2bf41a8a80e64ab9718e8cf16bf76e7",
+    "expires_at": "2026-08-24T05:39:00Z",
+    "generated_at": "2026-08-24T05:29:00Z",
+    "max_age_seconds": 900,
+    "required_fact_keys": [
+      "bank:available"
+    ],
+    "required_state_keys": [
+      "utility:due"
+    ],
+    "schema_version": 2,
+    "snapshot_id": "snap-adversarial-20260824"
+  },
+  "facts": [
+    {
+      "canonical_key": "bank:available",
+      "data_type": "financial_balance",
+      "observed_at": "2026-08-24T05:28:00Z",
+      "source_kind": "financial_institution",
+      "value": 141.76
+    }
+  ],
+  "live": {
+    "automations": [
+      {
+        "email_enabled": false,
+        "id": "auto-risk",
+        "is_enabled": false,
+        "last_run": "2026-08-24T05:25:00Z",
+        "notifications_enabled": false,
+        "schedule": "BEGIN:VEVENT\nRRULE:BYHOUR=9;FREQ=DAILY\nEND:VEVENT"
+      }
+    ]
+  },
+  "registry": {
+    "automations": [
+      {
+        "automation_id": "auto-risk",
+        "delivery_verified_from_last_run": true,
+        "email_enabled": true,
+        "enabled": true,
+        "notifications_enabled": true,
+        "timing": "BEGIN:VEVENT\nRRULE:FREQ=DAILY;BYHOUR=8\nEND:VEVENT"
+      }
+    ],
+    "portfolio": {
+      "primary_workflow_id": "WF.PRIMARY"
+    },
+    "states": [
+      {
+        "canonical_key": "utility:due",
+        "data_type": "contractual",
+        "observed_at": "2026-08-24T05:00:00Z",
+        "stale_after": "2026-08-24T05:20:00Z",
+        "state_id": "ST.UTILITY.DUE",
+        "status": "VERIFIED",
+        "value": 238.42
+      },
+      {
+        "canonical_key": "bank:available",
+        "data_type": "financial_balance",
+        "observed_at": "2026-08-24T05:20:00Z",
+        "stale_after": "2026-08-24T05:40:00Z",
+        "state_id": "ST.BANK.AVAILABLE",
+        "status": "VERIFIED",
+        "value": 650.08
+      }
+    ]
+  },
+  "request": {
+    "consequential": true,
+    "declared_fact_reads": [
+      "bank:available"
+    ],
+    "declared_state_reads": [
+      "utility:due"
+    ],
+    "require_automation_sync": true,
+    "require_notification_receipt": true,
+    "workflow_id": "WF.ADVERSARIAL"
+  }
+}

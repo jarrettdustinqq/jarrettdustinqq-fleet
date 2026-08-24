@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shlex
 import subprocess
 import sys
@@ -11,6 +12,16 @@ from pathlib import Path
 
 
 OPS_DIR = Path(__file__).resolve().parent
+
+
+def bind_jacs_preflight_environment() -> None:
+    """Make direct mission-control execution fail closed on the JACS boundary."""
+
+    data_home = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local" / "share")))
+    state_dir = Path(os.environ.get("FLEET_CONTROL_HUB_STATE_DIR", str(data_home / "fleet-control-hub")))
+    os.environ.setdefault("JACS_PREFLIGHT_REQUIRED", "1")
+    os.environ.setdefault("JACS_PREFLIGHT_JSON", str(state_dir / "jacs_preflight.json"))
+    os.environ.setdefault("JACS_STALE_JOURNAL", str(state_dir / "jacs_stale_events.jsonl"))
 
 
 def run_step(name: str, cmd: list[str]) -> int:
@@ -85,6 +96,7 @@ def build_hub_command(
 
 
 def main() -> int:
+    bind_jacs_preflight_environment()
     parser = build_parser()
     args, raw_hub_args = parser.parse_known_args()
 

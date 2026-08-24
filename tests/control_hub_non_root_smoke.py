@@ -13,12 +13,19 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib import request
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-RUNTIME = REPO_ROOT / "ops" / "control_hub_runtime.py"
+OPS_DIR = REPO_ROOT / "ops"
+if str(OPS_DIR) not in sys.path:
+    sys.path.insert(0, str(OPS_DIR))
+
+import jacs_control_preflight as jacs_preflight  # noqa: E402
+
+RUNTIME = OPS_DIR / "control_hub_runtime.py"
 
 
 def run_runtime(arguments: list[str]) -> subprocess.CompletedProcess[str]:
@@ -75,6 +82,54 @@ def initialize_repo(path: Path) -> None:
     )
 
 
+def write_jacs_snapshot(state_dir: Path, snapshot_id: str) -> Path:
+    """Create a fresh one-use snapshot for the isolated runtime smoke."""
+
+    now = datetime.now(timezone.utc)
+    observed = (now - timedelta(seconds=10)).isoformat()
+    payload = {
+        "default_timezone": "America/Chicago",
+        "envelope": {
+            "schema_version": jacs_preflight.SNAPSHOT_SCHEMA_VERSION,
+            "snapshot_id": snapshot_id,
+            "generated_at": (now - timedelta(seconds=5)).isoformat(),
+            "expires_at": (now + timedelta(minutes=5)).isoformat(),
+            "max_age_seconds": 600,
+            "authoritative_source_manifest": [
+                {
+                    "source_kind": "registry_projection",
+                    "data_types": ["generic"],
+                    "observed_at": observed,
+                    "source_ref": "ci:non-root-smoke",
+                }
+            ],
+            "required_state_keys": [],
+            "required_fact_keys": [],
+            "content_digest": "sha256:" + "0" * 64,
+        },
+        "request": {
+            "workflow_id": "WF.CI.NONROOT",
+            "consequential": True,
+            "declared_state_reads": [],
+            "declared_fact_reads": [],
+            "require_automation_sync": False,
+            "require_notification_receipt": False,
+        },
+        "registry": {
+            "states": [],
+            "automations": [],
+            "portfolio": {"primary_workflow_id": "WF.CI.NONROOT"},
+        },
+        "facts": [],
+        "live": {"automations": []},
+    }
+    payload["envelope"]["content_digest"] = jacs_preflight.compute_content_digest(payload)
+    path = state_dir / "jacs_preflight.json"
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+    return path
+
+
 def available_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
@@ -100,7 +155,7 @@ def wait_for_dashboard(process: subprocess.Popen[str], port: int) -> str:
                 body = response.read().decode("utf-8")
                 if response.status == 200 and "Fleet Control Hub" in body:
                     return body
-        except Exception as exc:  # transient startup path
+        except Exception as exc:
             last_error = str(exc)
             time.sleep(0.2)
     raise RuntimeError(f"dashboard did not become ready: {last_error}")
@@ -162,9 +217,14 @@ def main() -> int:
                 str(port),
             ]
         )
+        write_jacs_snapshot(state_dir, "snap-ci-scan-0001")
         run_runtime(["scan", "--config", str(config_path)])
 
         db_path = state_dir / "control_hub.db"
+        replay_journal = state_dir / "jacs_snapshot_receipts.jsonl"
+        if not replay_journal.exists():
+            raise RuntimeError("scan did not persist append-only snapshot receipt")
+
         conn = sqlite3.connect(db_path)
         conn.execute(
             """
@@ -178,9 +238,7 @@ def main() -> int:
         conn.commit()
         conn.close()
 
-        backup = json.loads(
-            run_runtime(["backup", "--config", str(config_path)]).stdout
-        )
+        backup = json.loads(run_runtime(["backup", "--config", str(config_path)]).stdout)
         run_runtime(
             [
                 "verify-backup",
@@ -218,9 +276,7 @@ def main() -> int:
         if preserved != (3, "preserve through verified recovery"):
             raise RuntimeError(f"operator state was not preserved: {preserved}")
 
-        check = json.loads(
-            run_runtime(["check", "--config", str(config_path)]).stdout
-        )
+        check = json.loads(run_runtime(["check", "--config", str(config_path)]).stdout)
         if check["database_integrity"] != "ok":
             raise RuntimeError(f"unexpected runtime check: {check}")
         if stat.S_IMODE(config_path.stat().st_mode) != 0o600:
@@ -244,12 +300,11 @@ def main() -> int:
         )
         if installed["started"]:
             raise RuntimeError("render-only unit installation unexpectedly started")
-        service_text = (unit_dir / "fleet-control-hub.service").read_text(
-            encoding="utf-8"
-        )
+        service_text = (unit_dir / "fleet-control-hub.service").read_text(encoding="utf-8")
         if "hub-runtime serve --config" not in service_text or "\nUser=" in service_text:
             raise RuntimeError("user service does not preserve the identity-bound launcher")
 
+        write_jacs_snapshot(state_dir, "snap-ci-serve-0001")
         process = subprocess.Popen(
             [
                 sys.executable,
@@ -276,7 +331,8 @@ def main() -> int:
         print(
             "CONTROL_HUB_NON_ROOT_SMOKE=PASS "
             f"user={identity.pw_name} uid={uid} "
-            "configure=ok scan=ok backup=ok restore=ok serve=ok units=ok"
+            "configure=ok scan=ok backup=ok restore=ok serve=ok units=ok "
+            "jacs_preflight=one-use"
         )
     return 0
 

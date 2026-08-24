@@ -3,6 +3,15 @@ set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+enable_jacs_preflight() {
+  local data_home state_dir
+  data_home="${XDG_DATA_HOME:-${HOME}/.local/share}"
+  state_dir="${FLEET_CONTROL_HUB_STATE_DIR:-${data_home}/fleet-control-hub}"
+  export JACS_PREFLIGHT_REQUIRED="${JACS_PREFLIGHT_REQUIRED:-1}"
+  export JACS_PREFLIGHT_JSON="${JACS_PREFLIGHT_JSON:-${state_dir}/jacs_preflight.json}"
+  export JACS_STALE_JOURNAL="${JACS_STALE_JOURNAL:-${state_dir}/jacs_stale_events.jsonl}"
+}
+
 usage() {
   cat <<'USAGE'
 Usage:
@@ -60,12 +69,15 @@ case "$cmd" in
     exec "$DIR/ops/install_venture_agent_timer.sh" "$@"
     ;;
   mission-control)
+    enable_jacs_preflight
     exec python3 "$DIR/ops/mission_control_agent.py" "$@"
     ;;
   hub-scan)
+    enable_jacs_preflight
     exec python3 "$DIR/ops/control_hub_safe_entry.py" scan "$@"
     ;;
   hub-serve)
+    enable_jacs_preflight
     if ! command -v sqlite3 >/dev/null 2>&1; then
       printf '[warn] sqlite3 not found in PATH; CLI DB checks will fail.\n' >&2
       printf "[warn] install sqlite3 to run: sqlite3 ~/.local/share/fleet-control-hub/control_hub.db '.tables'\n" >&2
@@ -73,6 +85,7 @@ case "$cmd" in
     exec python3 "$DIR/ops/control_hub_safe_entry.py" scan-serve "$@"
     ;;
   hub-runtime)
+    enable_jacs_preflight
     exec python3 "$DIR/ops/control_hub_runtime.py" "$@"
     ;;
   shell)

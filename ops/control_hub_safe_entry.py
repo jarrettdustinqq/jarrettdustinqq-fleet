@@ -3,8 +3,10 @@
 
 This wrapper keeps scan-related options on the subcommands used by ``fleetctl``
 and refuses inventory when no configured projects root can be observed. Healthy
-roots remain independently usable when a peer root is unavailable. The
-underlying dashboard implementation remains in ``control_hub_agent.py``.
+roots remain independently usable when a peer root is unavailable. JACS-bound
+Control Hub execution fails closed on snapshot, freshness, authority, dependency,
+or automation-runtime drift before ``control_hub_agent.py`` can mutate its SQLite
+read model.
 """
 
 from __future__ import annotations
@@ -17,14 +19,27 @@ from pathlib import Path
 from typing import Sequence
 
 import control_hub_agent as hub
+import jacs_control_preflight as jacs_preflight
 
 
 _CORE_RUN_SCAN = hub.run_scan
 _CORE_HUB_HANDLER = hub.HubHandler
+_JACS_PREFLIGHT_JSON: Path | None = None
+_JACS_STALE_JOURNAL: Path | None = None
+_JACS_PREFLIGHT_REQUIRED = False
 
 
 class ScanRefusedError(RuntimeError):
     """Raised when a scan cannot safely establish its observation boundary."""
+
+
+def _env_path(name: str) -> Path | None:
+    value = os.environ.get(name, "").strip()
+    return Path(value).expanduser() if value else None
+
+
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def add_common_inventory_options(parser: argparse.ArgumentParser) -> None:
@@ -58,6 +73,34 @@ def add_common_inventory_options(parser: argparse.ArgumentParser) -> None:
             "Continuity repo-registry.json path (default: "
             "<projects-root>/continuity/repo-registry.json; "
             "env: CONTINUITY_REPO_REGISTRY)"
+        ),
+    )
+    parser.add_argument(
+        "--jacs-preflight-json",
+        type=Path,
+        default=_env_path("JACS_PREFLIGHT_JSON"),
+        help=(
+            "Connector-produced versioned JACS runtime snapshot containing State, "
+            "authority facts, automation projection and live scheduler observations "
+            "(env: JACS_PREFLIGHT_JSON)."
+        ),
+    )
+    parser.add_argument(
+        "--jacs-stale-journal",
+        type=Path,
+        default=_env_path("JACS_STALE_JOURNAL"),
+        help=(
+            "Append-only local Evidence/Audit JSONL for effective stale transitions "
+            "(env: JACS_STALE_JOURNAL). Canonical JACS writeback remains separate."
+        ),
+    )
+    parser.add_argument(
+        "--require-jacs-preflight",
+        action="store_true",
+        default=_env_truthy("JACS_PREFLIGHT_REQUIRED"),
+        help=(
+            "Fail closed if no valid JACS preflight snapshot is available. "
+            "Can also be enabled with JACS_PREFLIGHT_REQUIRED=1."
         ),
     )
     parser.add_argument(
@@ -142,11 +185,9 @@ def add_serve_options(parser: argparse.ArgumentParser) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Safe Fleet Control Hub entry point")
     subparsers = parser.add_subparsers(dest="cmd", required=True)
-
     scan = subparsers.add_parser("scan", help="Run an inventory scan and update the DB.")
     add_common_inventory_options(scan)
     scan.set_defaults(func=hub.cmd_scan, scan_first=True)
-
     serve = subparsers.add_parser("serve", help="Serve the dashboard from an existing DB.")
     add_common_inventory_options(serve)
     add_serve_options(serve)
@@ -156,7 +197,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run a guarded inventory scan before serving.",
     )
     serve.set_defaults(func=hub.cmd_serve)
-
     scan_serve = subparsers.add_parser(
         "scan-serve",
         help="Run a guarded scan, then serve the dashboard.",
@@ -164,25 +204,71 @@ def build_parser() -> argparse.ArgumentParser:
     add_common_inventory_options(scan_serve)
     add_serve_options(scan_serve)
     scan_serve.set_defaults(func=hub.cmd_serve, scan_first=True)
-
     return parser
+
+
+def configure_jacs_preflight(args: argparse.Namespace) -> None:
+    """Bind one immutable preflight configuration for CLI and HTTP scan paths."""
+
+    global _JACS_PREFLIGHT_JSON, _JACS_STALE_JOURNAL, _JACS_PREFLIGHT_REQUIRED
+    raw_snapshot = getattr(args, "jacs_preflight_json", None)
+    raw_journal = getattr(args, "jacs_stale_journal", None)
+    runtime_caller = Path(sys.argv[0]).name == "control_hub_runtime.py"
+    required = bool(getattr(args, "require_jacs_preflight", False) or runtime_caller)
+    db_path = Path(getattr(args, "db", hub.DEFAULT_DB)).expanduser()
+    state_dir = db_path.parent
+
+    # A bound runtime config is authoritative for its own private state location.
+    # Ignore wrapper/environment defaults here so a custom --state-dir can never
+    # accidentally authorize from a different snapshot directory.
+    if runtime_caller:
+        raw_snapshot = state_dir / "jacs_preflight.json"
+        raw_journal = state_dir / "jacs_stale_events.jsonl"
+    elif required:
+        if raw_snapshot is None:
+            raw_snapshot = state_dir / "jacs_preflight.json"
+        if raw_journal is None:
+            raw_journal = state_dir / "jacs_stale_events.jsonl"
+
+    _JACS_PREFLIGHT_JSON = raw_snapshot.expanduser() if raw_snapshot else None
+    _JACS_STALE_JOURNAL = raw_journal.expanduser() if raw_journal else None
+    _JACS_PREFLIGHT_REQUIRED = required
+
+
+def jacs_preflight_refusal() -> str | None:
+    """Return a fail-closed refusal reason for the configured JACS snapshot."""
+
+    if _JACS_PREFLIGHT_JSON is None:
+        if _JACS_PREFLIGHT_REQUIRED:
+            return "JACS preflight snapshot required but not configured"
+        return None
+    if _JACS_PREFLIGHT_REQUIRED and not _JACS_PREFLIGHT_JSON.is_file():
+        return f"JACS preflight snapshot required but unavailable: {_JACS_PREFLIGHT_JSON}"
+    try:
+        report = jacs_preflight.run_preflight_from_file(
+            _JACS_PREFLIGHT_JSON,
+            stale_journal_path=_JACS_STALE_JOURNAL,
+        )
+    except jacs_preflight.PreflightError as exc:
+        prefix = "JACS preflight required but unavailable" if _JACS_PREFLIGHT_REQUIRED else "JACS preflight unavailable"
+        return f"{prefix}: {exc}"
+    if not report.allowed:
+        return f"JACS preflight refused: {report.summary()}"
+    return None
 
 
 def projects_root_error(projects_root: Path) -> str | None:
     root = projects_root.expanduser()
-
     try:
         resolved = root.resolve(strict=True)
     except (FileNotFoundError, OSError) as exc:
         return f"projects root is unavailable: {root} ({exc})"
-
     if not resolved.is_dir():
         return f"projects root is not a directory: {resolved}"
     if resolved == Path(resolved.anchor):
         return f"refusing to recursively scan filesystem root: {resolved}"
     if not os.access(resolved, os.R_OK | os.X_OK):
         return f"projects root is not readable/searchable: {resolved}"
-
     return None
 
 
@@ -193,13 +279,9 @@ def projects_roots_refusal(
     """Refuse only invalid configuration or a set with no observable root."""
 
     try:
-        roots = hub.normalize_projects_roots(
-            projects_root,
-            additional_projects_roots,
-        )
+        roots = hub.normalize_projects_roots(projects_root, additional_projects_roots)
     except hub.RepoDiscoveryError as exc:
         return str(exc)
-
     errors = [error for root in roots if (error := projects_root_error(root))]
     if len(errors) == len(roots):
         return "; ".join(errors)
@@ -216,14 +298,12 @@ def guarded_run_scan(
     venture_report_json: Path = hub.DEFAULT_VENTURE_REPORT_JSON,
     repo_registry_path: Path | None = None,
 ) -> dict[str, int | str]:
-    """Run the core scanner only after validating the observation boundary.
-
-    Keeping the guard on the shared callable protects CLI scans, scan-first serving,
-    and HTTP-triggered rescans that otherwise call ``control_hub_agent.run_scan``
-    directly after the server has already started.
-    """
+    """Authorize exactly once, immediately before the core scanner is invoked."""
 
     error = projects_roots_refusal(projects_root, additional_projects_roots)
+    if error:
+        raise ScanRefusedError(error)
+    error = jacs_preflight_refusal()
     if error:
         raise ScanRefusedError(error)
     return _CORE_RUN_SCAN(
@@ -238,7 +318,7 @@ def guarded_run_scan(
 
 
 class SafeHubHandler(_CORE_HUB_HANDLER):
-    """Dashboard handler that fails closed when the scan root disappears."""
+    """Dashboard handler that preserves DB state when a scan boundary is unsafe."""
 
     def _send_scan_refusal(self, error: str) -> None:
         payload = (
@@ -275,8 +355,8 @@ def install_runtime_guards() -> None:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    configure_jacs_preflight(args)
     install_runtime_guards()
-
     if getattr(args, "scan_first", False):
         error = projects_roots_refusal(
             args.projects_root,
@@ -289,7 +369,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
-
     try:
         return int(args.func(args))
     except (ScanRefusedError, hub.RepoDiscoveryError) as exc:
@@ -302,4 +381,5 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    os.environ.setdefault("JACS_PREFLIGHT_REQUIRED", "1")
     raise SystemExit(main())
