@@ -3,11 +3,10 @@
 
 This wrapper keeps scan-related options on the subcommands used by ``fleetctl``
 and refuses inventory when no configured projects root can be observed. Healthy
-roots remain independently usable when a peer root is unavailable. When a JACS
-preflight snapshot is configured, the shared scan callable also fails closed on
-snapshot, freshness, authority, dependency, or automation-runtime drift before
-the underlying dashboard implementation in ``control_hub_agent.py`` can mutate
-its SQLite read model.
+roots remain independently usable when a peer root is unavailable. JACS-bound
+Control Hub execution fails closed on snapshot, freshness, authority, dependency,
+or automation-runtime drift before ``control_hub_agent.py`` can mutate its SQLite
+read model.
 """
 
 from __future__ import annotations
@@ -100,7 +99,7 @@ def add_common_inventory_options(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         default=_env_truthy("JACS_PREFLIGHT_REQUIRED"),
         help=(
-            "Fail closed if no JACS preflight snapshot is configured. "
+            "Fail closed if no valid JACS preflight snapshot is available. "
             "Can also be enabled with JACS_PREFLIGHT_REQUIRED=1."
         ),
     )
@@ -186,11 +185,9 @@ def add_serve_options(parser: argparse.ArgumentParser) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Safe Fleet Control Hub entry point")
     subparsers = parser.add_subparsers(dest="cmd", required=True)
-
     scan = subparsers.add_parser("scan", help="Run an inventory scan and update the DB.")
     add_common_inventory_options(scan)
     scan.set_defaults(func=hub.cmd_scan, scan_first=True)
-
     serve = subparsers.add_parser("serve", help="Serve the dashboard from an existing DB.")
     add_common_inventory_options(serve)
     add_serve_options(serve)
@@ -200,7 +197,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run a guarded inventory scan before serving.",
     )
     serve.set_defaults(func=hub.cmd_serve)
-
     scan_serve = subparsers.add_parser(
         "scan-serve",
         help="Run a guarded scan, then serve the dashboard.",
@@ -208,7 +204,6 @@ def build_parser() -> argparse.ArgumentParser:
     add_common_inventory_options(scan_serve)
     add_serve_options(scan_serve)
     scan_serve.set_defaults(func=hub.cmd_serve, scan_first=True)
-
     return parser
 
 
@@ -218,9 +213,18 @@ def configure_jacs_preflight(args: argparse.Namespace) -> None:
     global _JACS_PREFLIGHT_JSON, _JACS_STALE_JOURNAL, _JACS_PREFLIGHT_REQUIRED
     raw_snapshot = getattr(args, "jacs_preflight_json", None)
     raw_journal = getattr(args, "jacs_stale_journal", None)
+    runtime_caller = Path(sys.argv[0]).name == "control_hub_runtime.py"
+    required = bool(getattr(args, "require_jacs_preflight", False) or runtime_caller)
+    if required:
+        db_path = Path(getattr(args, "db", hub.DEFAULT_DB)).expanduser()
+        state_dir = db_path.parent
+        if raw_snapshot is None:
+            raw_snapshot = state_dir / "jacs_preflight.json"
+        if raw_journal is None:
+            raw_journal = state_dir / "jacs_stale_events.jsonl"
     _JACS_PREFLIGHT_JSON = raw_snapshot.expanduser() if raw_snapshot else None
     _JACS_STALE_JOURNAL = raw_journal.expanduser() if raw_journal else None
-    _JACS_PREFLIGHT_REQUIRED = bool(getattr(args, "require_jacs_preflight", False))
+    _JACS_PREFLIGHT_REQUIRED = required
 
 
 def jacs_preflight_refusal() -> str | None:
@@ -342,7 +346,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     configure_jacs_preflight(args)
     install_runtime_guards()
-
     if getattr(args, "scan_first", False):
         error = projects_roots_refusal(
             args.projects_root,
@@ -355,7 +358,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
-
     try:
         return int(args.func(args))
     except (ScanRefusedError, hub.RepoDiscoveryError) as exc:
@@ -368,4 +370,5 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    os.environ.setdefault("JACS_PREFLIGHT_REQUIRED", "1")
     raise SystemExit(main())
