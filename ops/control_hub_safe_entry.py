@@ -215,13 +215,21 @@ def configure_jacs_preflight(args: argparse.Namespace) -> None:
     raw_journal = getattr(args, "jacs_stale_journal", None)
     runtime_caller = Path(sys.argv[0]).name == "control_hub_runtime.py"
     required = bool(getattr(args, "require_jacs_preflight", False) or runtime_caller)
-    if required:
-        db_path = Path(getattr(args, "db", hub.DEFAULT_DB)).expanduser()
-        state_dir = db_path.parent
+    db_path = Path(getattr(args, "db", hub.DEFAULT_DB)).expanduser()
+    state_dir = db_path.parent
+
+    # A bound runtime config is authoritative for its own private state location.
+    # Ignore wrapper/environment defaults here so a custom --state-dir can never
+    # accidentally authorize from a different snapshot directory.
+    if runtime_caller:
+        raw_snapshot = state_dir / "jacs_preflight.json"
+        raw_journal = state_dir / "jacs_stale_events.jsonl"
+    elif required:
         if raw_snapshot is None:
             raw_snapshot = state_dir / "jacs_preflight.json"
         if raw_journal is None:
             raw_journal = state_dir / "jacs_stale_events.jsonl"
+
     _JACS_PREFLIGHT_JSON = raw_snapshot.expanduser() if raw_snapshot else None
     _JACS_STALE_JOURNAL = raw_journal.expanduser() if raw_journal else None
     _JACS_PREFLIGHT_REQUIRED = required
