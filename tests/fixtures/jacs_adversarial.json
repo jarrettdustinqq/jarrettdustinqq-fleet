@@ -1,0 +1,70 @@
+{
+  "default_timezone": "America/Chicago",
+  "request": {
+    "workflow_id": "WF.ADVERSARIAL",
+    "consequential": true,
+    "required_state_keys": ["finance:cbt:available"],
+    "required_fact_keys": ["finance:cbt:available", "finance:insurance:next_due"],
+    "require_automation_sync": true
+  },
+  "registry": {
+    "portfolio": {"primary_workflow_id": "WF.BUFFER.2000.v1"},
+    "states": [
+      {
+        "state_id": "ST.FIN.CBT.AVAILABLE",
+        "canonical_key": "finance:cbt:available",
+        "value": 643.65,
+        "status": "VERIFIED",
+        "observed_at": "2026-08-17T17:04:27-05:00",
+        "stale_after": "2026-08-17T23:04:27-05:00",
+        "authority_data_type": "financial_balance"
+      }
+    ],
+    "automations": [
+      {
+        "automation_id": "cash-risk",
+        "enabled": true,
+        "timing": "DAILY",
+        "notifications_enabled": true,
+        "email_enabled": true,
+        "delivery_verified_from_last_run": true,
+        "disposition": "PRIMARY_CHILD_WATCH"
+      }
+    ]
+  },
+  "facts": [
+    {
+      "canonical_key": "finance:cbt:available",
+      "data_type": "financial_balance",
+      "source_kind": "financial_institution",
+      "value": 141.76,
+      "observed_at": "2026-08-24T00:22:00-05:00"
+    },
+    {
+      "canonical_key": "finance:insurance:next_due",
+      "data_type": "contractual",
+      "source_kind": "recurrence_prediction",
+      "value": {"amount": 572.22, "due": "2026-09-14"},
+      "observed_at": "2026-08-23T12:00:00-05:00"
+    },
+    {
+      "canonical_key": "finance:insurance:next_due",
+      "data_type": "contractual",
+      "source_kind": "provider",
+      "value": {"amount": 562.22, "due": "2026-09-04"},
+      "observed_at": "2026-08-23T13:00:00-05:00"
+    }
+  ],
+  "live": {
+    "automations": [
+      {
+        "id": "cash-risk",
+        "is_enabled": false,
+        "schedule": "DAILY",
+        "notifications_enabled": true,
+        "email_enabled": true,
+        "last_run_time": "2026-08-23T13:11:31Z"
+      }
+    ]
+  }
+}
