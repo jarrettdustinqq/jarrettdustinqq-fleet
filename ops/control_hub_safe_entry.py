@@ -4,8 +4,8 @@
 This wrapper keeps scan-related options on the subcommands used by ``fleetctl``
 and refuses inventory when no configured projects root can be observed. Healthy
 roots remain independently usable when a peer root is unavailable. When a JACS
-preflight snapshot is configured, the same shared scan path also fails closed on
-stale required state, authority drift, or required automation-runtime drift before
+preflight snapshot is configured, the shared scan callable also fails closed on
+snapshot, freshness, authority, dependency, or automation-runtime drift before
 the underlying dashboard implementation in ``control_hub_agent.py`` can mutate
 its SQLite read model.
 """
@@ -81,7 +81,7 @@ def add_common_inventory_options(parser: argparse.ArgumentParser) -> None:
         type=Path,
         default=_env_path("JACS_PREFLIGHT_JSON"),
         help=(
-            "Connector-produced JACS runtime snapshot containing relevant State, "
+            "Connector-produced versioned JACS runtime snapshot containing State, "
             "authority facts, automation projection and live scheduler observations "
             "(env: JACS_PREFLIGHT_JSON)."
         ),
@@ -230,7 +230,6 @@ def jacs_preflight_refusal() -> str | None:
         if _JACS_PREFLIGHT_REQUIRED:
             return "JACS preflight snapshot required but not configured"
         return None
-
     try:
         report = jacs_preflight.run_preflight_from_file(
             _JACS_PREFLIGHT_JSON,
@@ -238,7 +237,6 @@ def jacs_preflight_refusal() -> str | None:
         )
     except jacs_preflight.PreflightError as exc:
         return f"JACS preflight unavailable: {exc}"
-
     if not report.allowed:
         return f"JACS preflight refused: {report.summary()}"
     return None
@@ -246,19 +244,16 @@ def jacs_preflight_refusal() -> str | None:
 
 def projects_root_error(projects_root: Path) -> str | None:
     root = projects_root.expanduser()
-
     try:
         resolved = root.resolve(strict=True)
     except (FileNotFoundError, OSError) as exc:
         return f"projects root is unavailable: {root} ({exc})"
-
     if not resolved.is_dir():
         return f"projects root is not a directory: {resolved}"
     if resolved == Path(resolved.anchor):
         return f"refusing to recursively scan filesystem root: {resolved}"
     if not os.access(resolved, os.R_OK | os.X_OK):
         return f"projects root is not readable/searchable: {resolved}"
-
     return None
 
 
@@ -269,13 +264,9 @@ def projects_roots_refusal(
     """Refuse only invalid configuration or a set with no observable root."""
 
     try:
-        roots = hub.normalize_projects_roots(
-            projects_root,
-            additional_projects_roots,
-        )
+        roots = hub.normalize_projects_roots(projects_root, additional_projects_roots)
     except hub.RepoDiscoveryError as exc:
         return str(exc)
-
     errors = [error for root in roots if (error := projects_root_error(root))]
     if len(errors) == len(roots):
         return "; ".join(errors)
@@ -292,12 +283,7 @@ def guarded_run_scan(
     venture_report_json: Path = hub.DEFAULT_VENTURE_REPORT_JSON,
     repo_registry_path: Path | None = None,
 ) -> dict[str, int | str]:
-    """Run the core scanner only after filesystem and JACS preflight validation.
-
-    Keeping both guards on the shared callable protects CLI scans, scan-first
-    serving, and HTTP-triggered rescans that otherwise call
-    ``control_hub_agent.run_scan`` directly after the server has already started.
-    """
+    """Authorize exactly once, immediately before the core scanner is invoked."""
 
     error = projects_roots_refusal(projects_root, additional_projects_roots)
     if error:
@@ -317,7 +303,7 @@ def guarded_run_scan(
 
 
 class SafeHubHandler(_CORE_HUB_HANDLER):
-    """Dashboard handler that fails closed when a scan boundary is unsafe."""
+    """Dashboard handler that preserves DB state when a scan boundary is unsafe."""
 
     def _send_scan_refusal(self, error: str) -> None:
         payload = (
@@ -336,8 +322,6 @@ class SafeHubHandler(_CORE_HUB_HANDLER):
                 self.projects_root,
                 getattr(self, "additional_projects_roots", ()),
             )
-            if not error:
-                error = jacs_preflight_refusal()
             if error:
                 self._send_scan_refusal(error)
                 return
@@ -364,8 +348,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.projects_root,
             args.additional_projects_root,
         )
-        if not error:
-            error = jacs_preflight_refusal()
         if error:
             print(f"[control-hub] scan refused: {error}", file=sys.stderr)
             print(
