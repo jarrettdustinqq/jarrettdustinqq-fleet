@@ -242,13 +242,16 @@ def jacs_preflight_refusal() -> str | None:
         if _JACS_PREFLIGHT_REQUIRED:
             return "JACS preflight snapshot required but not configured"
         return None
+    if _JACS_PREFLIGHT_REQUIRED and not _JACS_PREFLIGHT_JSON.is_file():
+        return f"JACS preflight snapshot required but unavailable: {_JACS_PREFLIGHT_JSON}"
     try:
         report = jacs_preflight.run_preflight_from_file(
             _JACS_PREFLIGHT_JSON,
             stale_journal_path=_JACS_STALE_JOURNAL,
         )
     except jacs_preflight.PreflightError as exc:
-        return f"JACS preflight unavailable: {exc}"
+        prefix = "JACS preflight required but unavailable" if _JACS_PREFLIGHT_REQUIRED else "JACS preflight unavailable"
+        return f"{prefix}: {exc}"
     if not report.allowed:
         return f"JACS preflight refused: {report.summary()}"
     return None
