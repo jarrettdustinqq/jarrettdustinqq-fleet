@@ -223,8 +223,13 @@ def verify_operational_entry_policy() -> None:
             )
 
     fleetctl = (REPO_ROOT / "fleetctl").read_text(encoding="utf-8")
-    if "JACS_PREFLIGHT_REQUIRED=1" not in fleetctl:
-        raise RuntimeError("fleetctl no longer enables strict JACS preflight")
+    strict_export = 'export JACS_PREFLIGHT_REQUIRED="${JACS_PREFLIGHT_REQUIRED:-1}"'
+    if strict_export not in fleetctl:
+        raise RuntimeError("fleetctl no longer defaults JACS preflight to required")
+    for command_case in ("mission-control)", "hub-scan)", "hub-serve)", "hub-runtime)"):
+        marker = command_case + "\n    enable_jacs_preflight"
+        if marker not in fleetctl:
+            raise RuntimeError(f"fleetctl {command_case} no longer invokes enable_jacs_preflight")
 
 
 def main() -> int:
