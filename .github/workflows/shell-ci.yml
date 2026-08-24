@@ -7,6 +7,10 @@ on:
       - "**.py"
       - "fleetctl"
       - "repos.txt"
+      - "schemas/**"
+      - "examples/jacs-preflight/**"
+      - "config/jacs-host-activation-policy.json"
+      - "docs/jacs-host-activation.md"
       - ".github/workflows/shell-ci.yml"
   pull_request:
     paths:
@@ -14,6 +18,10 @@ on:
       - "**.py"
       - "fleetctl"
       - "repos.txt"
+      - "schemas/**"
+      - "examples/jacs-preflight/**"
+      - "config/jacs-host-activation-policy.json"
+      - "docs/jacs-host-activation.md"
       - ".github/workflows/shell-ci.yml"
 
 jobs:
@@ -45,10 +53,13 @@ jobs:
         run: bash tests/test_fleet_host_remediation.sh
 
       - name: Python syntax
-        run: python3 -m py_compile ops/chat_work_agent.py ops/control_hub_agent.py ops/control_hub_safe_entry.py ops/jacs_control_preflight.py ops/jacs_snapshot_boundary.py ops/control_hub_runtime.py ops/mission_control_agent.py ops/venture_autonomy_agent.py tests/control_hub_non_root_smoke.py tests/test_jacs_control_preflight.py tests/test_jacs_runtime_binding.py
+        run: python3 -m py_compile ops/chat_work_agent.py ops/control_hub_agent.py ops/control_hub_safe_entry.py ops/jacs_control_preflight.py ops/jacs_snapshot_boundary.py ops/jacs_snapshot_exporter.py ops/control_hub_runtime.py ops/mission_control_agent.py ops/venture_autonomy_agent.py tests/control_hub_non_root_smoke.py tests/jacs_host_activation_harness.py tests/test_jacs_control_preflight.py tests/test_jacs_runtime_binding.py tests/test_jacs_snapshot_exporter.py
 
       - name: Python tests
         run: python3 -m unittest discover -s tests -p 'test_*.py' -v
+
+      - name: JACS host activation proof
+        run: python3 tests/jacs_host_activation_harness.py
 
       - name: Non-root Control Hub runtime proof
         run: |
