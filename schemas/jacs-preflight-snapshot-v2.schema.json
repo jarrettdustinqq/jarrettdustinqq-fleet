@@ -1,0 +1,258 @@
+{
+  "$id": "https://example.invalid/jacs/jacs-preflight-snapshot-v2.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "default_timezone": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "envelope": {
+      "additionalProperties": false,
+      "properties": {
+        "authoritative_source_manifest": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "data_types": {
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "minItems": 1,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "observed_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "source_kind": {
+                "enum": [
+                  "user_explicit",
+                  "policy",
+                  "provider",
+                  "counterparty",
+                  "financial_institution",
+                  "scheduler_runtime",
+                  "github",
+                  "calendar",
+                  "registry_projection",
+                  "cached_projection",
+                  "recurrence_prediction",
+                  "model_prediction",
+                  "inference"
+                ]
+              },
+              "source_ref": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "source_kind",
+              "data_types",
+              "observed_at",
+              "source_ref"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "content_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "generated_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "max_age_seconds": {
+          "maximum": 86400,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "required_fact_keys": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "required_state_keys": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "snapshot_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "snapshot_id",
+        "generated_at",
+        "expires_at",
+        "max_age_seconds",
+        "authoritative_source_manifest",
+        "required_state_keys",
+        "required_fact_keys",
+        "content_digest"
+      ],
+      "type": "object"
+    },
+    "facts": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "canonical_key": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "data_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "source_kind": {
+            "enum": [
+              "user_explicit",
+              "policy",
+              "provider",
+              "counterparty",
+              "financial_institution",
+              "scheduler_runtime",
+              "github",
+              "calendar",
+              "registry_projection",
+              "cached_projection",
+              "recurrence_prediction",
+              "model_prediction",
+              "inference"
+            ]
+          },
+          "value": {}
+        },
+        "required": [
+          "canonical_key",
+          "data_type",
+          "source_kind",
+          "value",
+          "observed_at"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "live": {
+      "additionalProperties": false,
+      "properties": {
+        "automations": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "automations"
+      ],
+      "type": "object"
+    },
+    "registry": {
+      "additionalProperties": false,
+      "properties": {
+        "automations": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "portfolio": {
+          "type": "object"
+        },
+        "states": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "states",
+        "automations",
+        "portfolio"
+      ],
+      "type": "object"
+    },
+    "request": {
+      "additionalProperties": false,
+      "properties": {
+        "consequential": {
+          "type": "boolean"
+        },
+        "declared_fact_reads": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "declared_state_reads": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "require_automation_sync": {
+          "type": "boolean"
+        },
+        "require_notification_receipt": {
+          "type": "boolean"
+        },
+        "workflow_id": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "workflow_id",
+        "consequential",
+        "declared_state_reads",
+        "declared_fact_reads",
+        "require_automation_sync",
+        "require_notification_receipt"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "default_timezone",
+    "envelope",
+    "request",
+    "registry",
+    "facts",
+    "live"
+  ],
+  "title": "JACS Preflight Snapshot v2",
+  "type": "object"
+}
