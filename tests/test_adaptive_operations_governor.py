@@ -42,6 +42,7 @@ def make_loop(
         "required_authority": "L0",
         "current_authority": "L0",
         "authority_valid": True,
+        "definition_completeness": "COMPLETE",
         "dependencies": [
             {
                 "dependency_id": "DEP.SOURCE",
@@ -207,6 +208,31 @@ class ContractTests(unittest.TestCase):
         with self.assertRaisesRegex(AOG.ContractError, "requires evidence_refs"):
             AOG.evaluate(snapshot)
 
+    def test_partial_definition_may_preserve_unknown_values(self) -> None:
+        snapshot = make_snapshot()
+        loop = snapshot["loops"][1]
+        loop["definition_completeness"] = "PARTIAL"
+        loop["resource_budget"] = {
+            "max_calls_per_run": None,
+            "estimated_calls": None,
+            "max_runtime_seconds": None,
+            "estimated_runtime_seconds": None,
+            "max_cost_usd": None,
+            "estimated_cost_usd": None,
+        }
+        loop["expected_benefit"] = None
+        result = AOG.evaluate(snapshot)
+        rejected = {item["loop_id"]: item for item in result["dispatch_plan"]["rejected"]}
+        self.assertIn("RESOURCE_BUDGET_UNKNOWN", rejected["LOOP.P3"]["reasons"])
+        self.assertEqual("PARTIAL", rejected["LOOP.P3"]["score_status"])
+        self.assertIn("expected_benefit", rejected["LOOP.P3"]["unknown_score_fields"])
+
+    def test_complete_definition_cannot_hide_unknown_values(self) -> None:
+        snapshot = make_snapshot()
+        snapshot["loops"][1]["resource_budget"]["estimated_calls"] = None
+        with self.assertRaisesRegex(AOG.ContractError, "declares COMPLETE but has unknown fields"):
+            AOG.evaluate(snapshot)
+
 
 class GateTests(unittest.TestCase):
     def test_reopened_muxa_degradation_forces_shadow(self) -> None:
@@ -287,6 +313,16 @@ class GateTests(unittest.TestCase):
             "CANARY_AUTHORITY_MUST_ALLOW_EXACTLY_ONE_MUTATION",
             result["gates"]["fail_closed_reasons"],
         )
+
+    def test_partial_canary_target_is_blocked(self) -> None:
+        snapshot = make_snapshot(requested_mode="CANARY")
+        clear_journal(snapshot)
+        add_canary_authority(snapshot, "LOOP.P3")
+        snapshot["loops"][1]["definition_completeness"] = "PARTIAL"
+        snapshot["loops"][1]["expected_benefit"] = None
+        result = AOG.evaluate(snapshot)
+        self.assertEqual("SHADOW", result["effective_mode"])
+        self.assertIn("CANARY_LOOP_DEFINITION_INCOMPLETE", result["gates"]["fail_closed_reasons"])
 
 
 class DispatchTests(unittest.TestCase):
