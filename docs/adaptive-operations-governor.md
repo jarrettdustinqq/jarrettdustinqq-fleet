@@ -67,8 +67,13 @@ Each live physical or logical loop must resolve these fields from JACS:
 - last run, next due, deadline, source freshness, evidence references, and open
   contradictions.
 
-Unknown values remain explicit unknowns. They must not be replaced with model
-inference merely to make a loop scoreable.
+Unknown values remain explicit `null` values. They must not be replaced with
+model inference merely to make a loop scoreable. A loop with an unknown resource
+budget is rejected from dispatch with `RESOURCE_BUDGET_UNKNOWN`; unknown scoring
+fields contribute no positive or negative weight and are listed in
+`unknown_score_fields`. That zero contribution means "unscored," not "zero value."
+A canary target must declare a complete definition with no unknown budget or
+scoring fields.
 
 ## Journal gate
 
@@ -220,11 +225,12 @@ python3 -m unittest tests.test_adaptive_operations_governor -v
 python3 -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
-The focused suite covers stale and contradictory state, duplicate source events,
-partial Audit/readback gates, executor/dependency failure, missed heartbeats,
-deadline pressure, capacity starvation, priority inversion, policy drift,
-restart determinism, exact rollback, out-of-bounds cadence, unauthorized advisor
-fields, one-loop canary scope, and progress-accounting rules.
+The 36-test focused suite covers stale and contradictory state, duplicate source
+events, partial Audit/readback gates, executor/dependency failure, missed
+heartbeats, deadline pressure, capacity starvation, priority inversion, policy
+drift, explicit unknown values, incomplete canary definitions, restart
+determinism, exact rollback, out-of-bounds cadence, unauthorized advisor fields,
+one-loop canary scope, and progress-accounting rules.
 
 ## Rollback
 
