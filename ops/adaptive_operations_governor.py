@@ -19,7 +19,7 @@ import json
 import math
 import sys
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 
 SNAPSHOT_SCHEMA_VERSION = "AOG.SNAPSHOT.v1"
@@ -76,6 +76,12 @@ POLICY_MANIFEST: dict[str, Any] = {
     "heartbeat": {
         "fixed_primitive_required": True,
         "replacement_forbidden": True,
+    },
+    "unknown_values": {
+        "representation": "null",
+        "resource_budget": "reject_dispatch_until_known",
+        "scoring": "zero_weight_with_explicit_unknown_fields",
+        "canary": "target_loop_definition_must_be_complete",
     },
     "canary": {
         "max_loops": 1,
@@ -185,6 +191,24 @@ def _nonnegative_number(value: Any, field: str) -> float:
     if not math.isfinite(number) or number < 0.0:
         raise ContractError(f"{field} must be nonnegative")
     return number
+
+
+def _optional_bounded_number(value: Any, field: str) -> float | None:
+    if value is None:
+        return None
+    return _bounded_number(value, field)
+
+
+def _optional_nonnegative_number(value: Any, field: str) -> float | None:
+    if value is None:
+        return None
+    return _nonnegative_number(value, field)
+
+
+def _optional_nonnegative_int(value: Any, field: str) -> int | None:
+    if value is None:
+        return None
+    return _require_int(value, field, minimum=0)
 
 
 def _parse_time(value: Any, field: str) -> dt.datetime:
@@ -301,6 +325,14 @@ def validate_snapshot(snapshot: Any) -> dict[str, Any]:
         _require_bool(_get_required(loop, "hard_obligation", prefix), f"{prefix}.hard_obligation")
         _require_bool(_get_required(loop, "authority_valid", prefix), f"{prefix}.authority_valid")
         _require_bool(loop.get("resume_triggered", False), f"{prefix}.resume_triggered")
+        completeness = _require_string(
+            _get_required(loop, "definition_completeness", prefix),
+            f"{prefix}.definition_completeness",
+        ).upper()
+        if completeness not in {"COMPLETE", "PARTIAL", "UNKNOWN"}:
+            raise ContractError(
+                f"{prefix}.definition_completeness must be COMPLETE, PARTIAL, or UNKNOWN"
+            )
 
         cadence = _require_mapping(_get_required(loop, "cadence", prefix), f"{prefix}.cadence")
         minimum = _require_int(_get_required(cadence, "min_seconds", f"{prefix}.cadence"), f"{prefix}.cadence.min_seconds", minimum=1)
@@ -334,9 +366,15 @@ def validate_snapshot(snapshot: Any) -> dict[str, Any]:
 
         budget = _require_mapping(_get_required(loop, "resource_budget", prefix), f"{prefix}.resource_budget")
         for key in ("max_calls_per_run", "estimated_calls"):
-            _require_int(_get_required(budget, key, f"{prefix}.resource_budget"), f"{prefix}.resource_budget.{key}", minimum=0)
+            _optional_nonnegative_int(
+                _get_required(budget, key, f"{prefix}.resource_budget"),
+                f"{prefix}.resource_budget.{key}",
+            )
         for key in ("max_runtime_seconds", "estimated_runtime_seconds", "max_cost_usd", "estimated_cost_usd"):
-            _nonnegative_number(_get_required(budget, key, f"{prefix}.resource_budget"), f"{prefix}.resource_budget.{key}")
+            _optional_nonnegative_number(
+                _get_required(budget, key, f"{prefix}.resource_budget"),
+                f"{prefix}.resource_budget.{key}",
+            )
 
         for key in ("success_evidence", "verified_abstention_criteria", "contradictions", "evidence_refs"):
             values = _require_sequence(_get_required(loop, key, prefix), f"{prefix}.{key}")
@@ -354,7 +392,30 @@ def validate_snapshot(snapshot: Any) -> dict[str, Any]:
             "attention_burden",
             "risk",
         ):
-            _bounded_number(_get_required(loop, key, prefix), f"{prefix}.{key}")
+            _optional_bounded_number(_get_required(loop, key, prefix), f"{prefix}.{key}")
+
+        if completeness == "COMPLETE":
+            unknown_budget = [key for key, value in budget.items() if value is None]
+            unknown_scores = [
+                key
+                for key in (
+                    "expected_benefit",
+                    "probability_success",
+                    "information_gain",
+                    "external_branching_value",
+                    "external_progress_probability",
+                    "employment_compatibility",
+                    "cost",
+                    "attention_burden",
+                    "risk",
+                )
+                if loop[key] is None
+            ]
+            if unknown_budget or unknown_scores:
+                raise ContractError(
+                    f"{prefix} declares COMPLETE but has unknown fields: "
+                    f"budget={sorted(unknown_budget)}, scoring={sorted(unknown_scores)}"
+                )
 
         for key in ("no_material_change_streak", "consecutive_failures", "deferred_cycles"):
             _require_int(_get_required(loop, key, prefix), f"{prefix}.{key}", minimum=0)
@@ -520,9 +581,12 @@ def canary_authority_gate(snapshot: Mapping[str, Any]) -> GateResult:
         reasons.append("CANARY_AUTHORITY_MUST_ALLOW_EXACTLY_ONE_MUTATION")
     if not bool(grant["rollback_required"]):
         reasons.append("CANARY_AUTHORITY_MUST_REQUIRE_ROLLBACK")
-    loop_ids = {loop["loop_id"] for loop in snapshot["loops"]}
-    if grant["loop_id"] not in loop_ids:
+    loops = {loop["loop_id"]: loop for loop in snapshot["loops"]}
+    target = loops.get(grant["loop_id"])
+    if target is None:
         reasons.append("CANARY_AUTHORITY_LOOP_NOT_IN_REGISTRY")
+    elif str(target["definition_completeness"]).upper() != "COMPLETE":
+        reasons.append("CANARY_LOOP_DEFINITION_INCOMPLETE")
     return GateResult(not reasons, tuple(reasons))
 
 
@@ -575,12 +639,15 @@ def loop_eligibility(loop: Mapping[str, Any], snapshot_at: dt.datetime) -> Eligi
         reasons.append("AUTHORITY_NOT_READY")
 
     budget = loop["resource_budget"]
-    if int(budget["estimated_calls"]) > int(budget["max_calls_per_run"]):
-        reasons.append("CALL_BUDGET_EXCEEDED")
-    if float(budget["estimated_runtime_seconds"]) > float(budget["max_runtime_seconds"]):
-        reasons.append("RUNTIME_BUDGET_EXCEEDED")
-    if float(budget["estimated_cost_usd"]) > float(budget["max_cost_usd"]):
-        reasons.append("COST_BUDGET_EXCEEDED")
+    if any(value is None for value in budget.values()):
+        reasons.append("RESOURCE_BUDGET_UNKNOWN")
+    else:
+        if int(budget["estimated_calls"]) > int(budget["max_calls_per_run"]):
+            reasons.append("CALL_BUDGET_EXCEEDED")
+        if float(budget["estimated_runtime_seconds"]) > float(budget["max_runtime_seconds"]):
+            reasons.append("RUNTIME_BUDGET_EXCEEDED")
+        if float(budget["estimated_cost_usd"]) > float(budget["max_cost_usd"]):
+            reasons.append("COST_BUDGET_EXCEEDED")
 
     event_key = str(loop.get("event_key", ""))
     if event_key and event_key == str(loop.get("last_event_key", "")):
@@ -600,6 +667,29 @@ def _starvation_score(loop: Mapping[str, Any]) -> float:
     return min(1.0, cycles / threshold)
 
 
+def _known_score(loop: Mapping[str, Any], key: str) -> float:
+    value = loop[key]
+    return 0.0 if value is None else float(value)
+
+
+def _unknown_score_fields(loop: Mapping[str, Any]) -> list[str]:
+    return [
+        key
+        for key in (
+            "expected_benefit",
+            "probability_success",
+            "information_gain",
+            "external_branching_value",
+            "external_progress_probability",
+            "employment_compatibility",
+            "cost",
+            "attention_burden",
+            "risk",
+        )
+        if loop[key] is None
+    ]
+
+
 def score_loop(loop: Mapping[str, Any], eligibility: Eligibility) -> tuple[float, dict[str, float]]:
     weights = POLICY_MANIFEST["scoring"]
     priority_weight = float(weights["priority_class"].get(str(loop["priority_class"]).upper(), 0.0))
@@ -607,20 +697,20 @@ def score_loop(loop: Mapping[str, Any], eligibility: Eligibility) -> tuple[float
         "priority_class": priority_weight,
         "hard_obligation": float(weights["hard_obligation"]) if loop["hard_obligation"] else 0.0,
         "deadline_pressure": eligibility.deadline_pressure * float(weights["deadline_pressure"]),
-        "expected_realized_benefit": float(loop["expected_benefit"])
-        * float(loop["probability_success"])
+        "expected_realized_benefit": _known_score(loop, "expected_benefit")
+        * _known_score(loop, "probability_success")
         * float(weights["expected_realized_benefit"]),
-        "information_gain": float(loop["information_gain"]) * float(weights["information_gain"]),
-        "external_branching_value": float(loop["external_branching_value"])
+        "information_gain": _known_score(loop, "information_gain") * float(weights["information_gain"]),
+        "external_branching_value": _known_score(loop, "external_branching_value")
         * float(weights["external_branching_value"]),
-        "external_progress_probability": float(loop["external_progress_probability"])
+        "external_progress_probability": _known_score(loop, "external_progress_probability")
         * float(weights["external_progress_probability"]),
-        "employment_compatibility": float(loop["employment_compatibility"])
+        "employment_compatibility": _known_score(loop, "employment_compatibility")
         * float(weights["employment_compatibility"]),
         "starvation": _starvation_score(loop) * float(weights["starvation"]),
-        "cost": float(loop["cost"]) * float(weights["cost"]),
-        "attention_burden": float(loop["attention_burden"]) * float(weights["attention_burden"]),
-        "risk": float(loop["risk"]) * float(weights["risk"]),
+        "cost": _known_score(loop, "cost") * float(weights["cost"]),
+        "attention_burden": _known_score(loop, "attention_burden") * float(weights["attention_burden"]),
+        "risk": _known_score(loop, "risk") * float(weights["risk"]),
     }
     return round(sum(components.values()), 6), {key: round(value, 6) for key, value in components.items()}
 
@@ -638,9 +728,12 @@ def build_dispatch_plan(snapshot: Mapping[str, Any]) -> tuple[list[dict[str, Any
                 "due": eligibility.due,
                 "score": score,
                 "score_components": components,
+                "score_status": "PARTIAL" if _unknown_score_fields(loop) else "COMPLETE",
+                "unknown_score_fields": _unknown_score_fields(loop),
                 "reasons": list(eligibility.reasons),
+                "definition_completeness": str(loop["definition_completeness"]).upper(),
                 "weight_class": str(loop["weight_class"]).upper(),
-                "estimated_calls": int(loop["resource_budget"]["estimated_calls"]),
+                "estimated_calls": loop["resource_budget"]["estimated_calls"],
                 "priority_class": str(loop["priority_class"]).upper(),
                 "hard_obligation": bool(loop["hard_obligation"]),
                 "idempotency_rule": loop["idempotency_rule"],
@@ -666,7 +759,10 @@ def build_dispatch_plan(snapshot: Mapping[str, Any]) -> tuple[list[dict[str, Any
             capacity_reasons.append("DISPATCH_CAPACITY_EXHAUSTED")
         if item["weight_class"] == "HEAVY" and heavy >= int(capacity["max_heavy"]):
             capacity_reasons.append("HEAVY_CAPACITY_EXHAUSTED")
-        if calls + int(item["estimated_calls"]) > int(capacity["max_calls"]):
+        estimated_calls = item["estimated_calls"]
+        if estimated_calls is None:
+            capacity_reasons.append("TOTAL_CALL_CAPACITY_UNKNOWN")
+        elif calls + int(estimated_calls) > int(capacity["max_calls"]):
             capacity_reasons.append("TOTAL_CALL_CAPACITY_EXHAUSTED")
         if capacity_reasons:
             decision["decision"] = "REJECT"
