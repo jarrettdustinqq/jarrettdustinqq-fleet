@@ -19,35 +19,73 @@
     "loops"
   ],
   "properties": {
-    "schema_version": {"const": "AOG.SNAPSHOT.v1"},
-    "registry_version": {"const": "AOG.LOOP_REGISTRY.v1"},
-    "snapshot_at": {"type": "string", "format": "date-time"},
-    "principal_id": {"type": "string", "minLength": 1},
-    "requested_mode": {"enum": ["SHADOW", "CANARY", "shadow", "canary"]},
-    "policy_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "journal_gate": {"$ref": "#/$defs/journalGate"},
-    "heartbeat": {"$ref": "#/$defs/heartbeat"},
-    "registry_health": {"$ref": "#/$defs/registryHealth"},
-    "capacity": {"$ref": "#/$defs/capacity"},
+    "schema_version": {
+      "const": "AOG.SNAPSHOT.v1"
+    },
+    "registry_version": {
+      "const": "AOG.LOOP_REGISTRY.v1"
+    },
+    "snapshot_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "principal_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "requested_mode": {
+      "enum": [
+        "SHADOW",
+        "CANARY",
+        "shadow",
+        "canary"
+      ]
+    },
+    "policy_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "journal_gate": {
+      "$ref": "#/$defs/journalGate"
+    },
+    "heartbeat": {
+      "$ref": "#/$defs/heartbeat"
+    },
+    "registry_health": {
+      "$ref": "#/$defs/registryHealth"
+    },
+    "capacity": {
+      "$ref": "#/$defs/capacity"
+    },
     "loops": {
       "type": "array",
       "minItems": 1,
-      "items": {"$ref": "#/$defs/loop"}
+      "items": {
+        "$ref": "#/$defs/loop"
+      }
     },
     "advisor_proposals": {
       "type": "array",
       "default": [],
-      "items": {"$ref": "#/$defs/advisorProposal"}
+      "items": {
+        "$ref": "#/$defs/advisorProposal"
+      }
     },
     "recent_outcomes": {
       "type": "array",
       "default": [],
-      "items": {"$ref": "#/$defs/recentOutcome"}
+      "items": {
+        "$ref": "#/$defs/recentOutcome"
+      }
     },
     "canary_authority": {
       "oneOf": [
-        {"type": "null"},
-        {"$ref": "#/$defs/canaryAuthority"}
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/canaryAuthority"
+        }
       ]
     }
   },
@@ -74,17 +112,42 @@
         "last_qualified_run"
       ],
       "properties": {
-        "degradation_state": {"type": "string", "minLength": 1},
-        "proof_streak": {"type": "integer", "minimum": 0},
-        "required_streak": {"type": "integer", "minimum": 5},
-        "provider_atomic_audit_cohort": {"type": "boolean"},
-        "exact_cardinality_verified": {"type": "boolean"},
-        "exact_idempotency_verified": {"type": "boolean"},
-        "neighbor_integrity_verified": {"type": "boolean"},
-        "state_after_audit_verified": {"type": "boolean"},
-        "final_audit_state_readback_verified": {"type": "boolean"},
-        "historical_t05_loss_preserved": {"type": "boolean"},
-        "last_qualified_run": {"type": "string"}
+        "degradation_state": {
+          "type": "string",
+          "minLength": 1
+        },
+        "proof_streak": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "required_streak": {
+          "type": "integer",
+          "minimum": 5
+        },
+        "provider_atomic_audit_cohort": {
+          "type": "boolean"
+        },
+        "exact_cardinality_verified": {
+          "type": "boolean"
+        },
+        "exact_idempotency_verified": {
+          "type": "boolean"
+        },
+        "neighbor_integrity_verified": {
+          "type": "boolean"
+        },
+        "state_after_audit_verified": {
+          "type": "boolean"
+        },
+        "final_audit_state_readback_verified": {
+          "type": "boolean"
+        },
+        "historical_t05_loss_preserved": {
+          "type": "boolean"
+        },
+        "last_qualified_run": {
+          "type": "string"
+        }
       }
     },
     "heartbeat": {
@@ -98,11 +161,23 @@
         "max_age_seconds"
       ],
       "properties": {
-        "fixed_primitive": {"type": "boolean"},
-        "replacement_requested": {"type": "boolean"},
-        "reported_healthy": {"type": "boolean"},
-        "last_seen_at": {"type": "string", "format": "date-time"},
-        "max_age_seconds": {"type": "integer", "minimum": 1}
+        "fixed_primitive": {
+          "type": "boolean"
+        },
+        "replacement_requested": {
+          "type": "boolean"
+        },
+        "reported_healthy": {
+          "type": "boolean"
+        },
+        "last_seen_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "max_age_seconds": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     },
     "registryHealth": {
@@ -114,36 +189,73 @@
         "critical_contradictions"
       ],
       "properties": {
-        "snapshot_readback_verified": {"type": "boolean"},
-        "critical_state_fresh": {"type": "boolean"},
+        "snapshot_readback_verified": {
+          "type": "boolean"
+        },
+        "critical_state_fresh": {
+          "type": "boolean"
+        },
         "critical_contradictions": {
           "type": "array",
-          "items": {"type": "string", "minLength": 1}
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         }
       }
     },
     "capacity": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["max_dispatches", "max_heavy", "max_calls"],
+      "required": [
+        "max_dispatches",
+        "max_heavy",
+        "max_calls"
+      ],
       "properties": {
-        "max_dispatches": {"type": "integer", "minimum": 1},
-        "max_heavy": {"type": "integer", "minimum": 0},
-        "max_calls": {"type": "integer", "minimum": 1}
+        "max_dispatches": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_heavy": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_calls": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     },
     "dependency": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["dependency_id", "status", "critical"],
+      "required": [
+        "dependency_id",
+        "status",
+        "critical"
+      ],
       "properties": {
-        "dependency_id": {"type": "string", "minLength": 1},
-        "status": {"type": "string", "minLength": 1},
-        "critical": {"type": "boolean"},
+        "dependency_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "minLength": 1
+        },
+        "critical": {
+          "type": "boolean"
+        },
         "fresh_until": {
           "oneOf": [
-            {"type": "null"},
-            {"type": "string", "format": "date-time"}
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "format": "date-time"
+            }
           ]
         }
       }
@@ -151,12 +263,29 @@
     "cadence": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["min_seconds", "max_seconds", "current_seconds", "phase"],
+      "required": [
+        "min_seconds",
+        "max_seconds",
+        "current_seconds",
+        "phase"
+      ],
       "properties": {
-        "min_seconds": {"type": "integer", "minimum": 1},
-        "max_seconds": {"type": "integer", "minimum": 1},
-        "current_seconds": {"type": "integer", "minimum": 1},
-        "phase": {"type": "string", "minLength": 1}
+        "min_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "current_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "phase": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     },
     "resourceBudget": {
@@ -171,33 +300,71 @@
         "estimated_cost_usd"
       ],
       "properties": {
-        "max_calls_per_run": {"type": "integer", "minimum": 0},
-        "estimated_calls": {"type": "integer", "minimum": 0},
-        "max_runtime_seconds": {"type": "number", "minimum": 0},
-        "estimated_runtime_seconds": {"type": "number", "minimum": 0},
-        "max_cost_usd": {"type": "number", "minimum": 0},
-        "estimated_cost_usd": {"type": "number", "minimum": 0}
+        "max_calls_per_run": {
+          "$ref": "#/$defs/nullableNonnegativeInteger"
+        },
+        "estimated_calls": {
+          "$ref": "#/$defs/nullableNonnegativeInteger"
+        },
+        "max_runtime_seconds": {
+          "$ref": "#/$defs/nullableNonnegativeNumber"
+        },
+        "estimated_runtime_seconds": {
+          "$ref": "#/$defs/nullableNonnegativeNumber"
+        },
+        "max_cost_usd": {
+          "$ref": "#/$defs/nullableNonnegativeNumber"
+        },
+        "estimated_cost_usd": {
+          "$ref": "#/$defs/nullableNonnegativeNumber"
+        }
       }
     },
     "adaptationBounds": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["allowed_actions", "no_change_threshold", "failure_pause_threshold"],
+      "required": [
+        "allowed_actions",
+        "no_change_threshold",
+        "failure_pause_threshold"
+      ],
       "properties": {
         "allowed_actions": {
           "type": "array",
           "uniqueItems": true,
-          "items": {"enum": ["SKIP_ONCE", "PAUSE", "RESUME", "SET_CADENCE"]}
+          "items": {
+            "enum": [
+              "SKIP_ONCE",
+              "PAUSE",
+              "RESUME",
+              "SET_CADENCE"
+            ]
+          }
         },
-        "no_change_threshold": {"type": "integer", "minimum": 1},
-        "failure_pause_threshold": {"type": "integer", "minimum": 1},
-        "starvation_threshold": {"type": "integer", "minimum": 1, "default": 3}
+        "no_change_threshold": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "failure_pause_threshold": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "starvation_threshold": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 3
+        }
       }
     },
     "nullableDateTime": {
       "oneOf": [
-        {"type": "null"},
-        {"type": "string", "format": "date-time"}
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "format": "date-time"
+        }
       ]
     },
     "loop": {
@@ -219,6 +386,7 @@
         "required_authority",
         "current_authority",
         "authority_valid",
+        "definition_completeness",
         "dependencies",
         "cadence",
         "resource_budget",
@@ -252,82 +420,276 @@
         "evidence_refs"
       ],
       "properties": {
-        "loop_id": {"type": "string", "minLength": 1},
-        "objective_id": {"type": "string", "minLength": 1},
-        "layer": {"type": "string", "minLength": 1},
-        "scheduler_id": {"type": "string"},
-        "parent_loop_id": {"type": "string"},
-        "trigger": {"type": "string", "minLength": 1},
-        "enabled": {"type": "boolean"},
-        "triggered": {"type": "boolean"},
-        "hard_obligation": {"type": "boolean"},
-        "lifecycle_state": {
-          "enum": ["CANDIDATE", "SHADOW", "ACTIVE", "DEGRADED", "PAUSED", "RETIRED", "QUARANTINED"]
+        "loop_id": {
+          "type": "string",
+          "minLength": 1
         },
-        "priority_class": {"type": "string", "minLength": 1},
-        "weight_class": {"type": "string", "minLength": 1},
-        "required_authority": {"enum": ["L0", "L1", "L2", "L3", "L4"]},
-        "current_authority": {"enum": ["L0", "L1", "L2", "L3", "L4"]},
-        "authority_valid": {"type": "boolean"},
-        "dependencies": {"type": "array", "items": {"$ref": "#/$defs/dependency"}},
-        "cadence": {"$ref": "#/$defs/cadence"},
-        "resource_budget": {"$ref": "#/$defs/resourceBudget"},
-        "success_evidence": {"type": "array", "items": {"type": "string", "minLength": 1}},
-        "verified_abstention_criteria": {"type": "array", "items": {"type": "string", "minLength": 1}},
-        "idempotency_rule": {"type": "string", "minLength": 1},
-        "adaptation_bounds": {"$ref": "#/$defs/adaptationBounds"},
-        "pause_rule": {"type": "string", "minLength": 1},
-        "retirement_rule": {"type": "string", "minLength": 1},
-        "expected_benefit": {"$ref": "#/$defs/boundedScore"},
-        "probability_success": {"$ref": "#/$defs/boundedScore"},
-        "information_gain": {"$ref": "#/$defs/boundedScore"},
-        "external_branching_value": {"$ref": "#/$defs/boundedScore"},
-        "external_progress_probability": {"$ref": "#/$defs/boundedScore"},
-        "employment_compatibility": {"$ref": "#/$defs/boundedScore"},
-        "cost": {"$ref": "#/$defs/boundedScore"},
-        "attention_burden": {"$ref": "#/$defs/boundedScore"},
-        "risk": {"$ref": "#/$defs/boundedScore"},
-        "no_material_change_streak": {"type": "integer", "minimum": 0},
-        "consecutive_failures": {"type": "integer", "minimum": 0},
-        "deferred_cycles": {"type": "integer", "minimum": 0},
-        "resume_triggered": {"type": "boolean"},
-        "last_run_at": {"$ref": "#/$defs/nullableDateTime"},
-        "next_due_at": {"$ref": "#/$defs/nullableDateTime"},
-        "deadline_at": {"$ref": "#/$defs/nullableDateTime"},
-        "source_fresh_until": {"$ref": "#/$defs/nullableDateTime"},
-        "last_material_outcome_at": {"$ref": "#/$defs/nullableDateTime"},
-        "event_key": {"type": "string"},
-        "last_event_key": {"type": "string"},
-        "contradictions": {"type": "array", "items": {"type": "string", "minLength": 1}},
-        "evidence_refs": {"type": "array", "items": {"type": "string", "minLength": 1}},
-        "deadline_lead_seconds": {"type": "integer", "minimum": 1}
+        "objective_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "layer": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scheduler_id": {
+          "type": "string"
+        },
+        "parent_loop_id": {
+          "type": "string"
+        },
+        "trigger": {
+          "type": "string",
+          "minLength": 1
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "triggered": {
+          "type": "boolean"
+        },
+        "hard_obligation": {
+          "type": "boolean"
+        },
+        "lifecycle_state": {
+          "enum": [
+            "CANDIDATE",
+            "SHADOW",
+            "ACTIVE",
+            "DEGRADED",
+            "PAUSED",
+            "RETIRED",
+            "QUARANTINED"
+          ]
+        },
+        "priority_class": {
+          "type": "string",
+          "minLength": 1
+        },
+        "weight_class": {
+          "type": "string",
+          "minLength": 1
+        },
+        "required_authority": {
+          "enum": [
+            "L0",
+            "L1",
+            "L2",
+            "L3",
+            "L4"
+          ]
+        },
+        "current_authority": {
+          "enum": [
+            "L0",
+            "L1",
+            "L2",
+            "L3",
+            "L4"
+          ]
+        },
+        "authority_valid": {
+          "type": "boolean"
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/dependency"
+          }
+        },
+        "cadence": {
+          "$ref": "#/$defs/cadence"
+        },
+        "resource_budget": {
+          "$ref": "#/$defs/resourceBudget"
+        },
+        "success_evidence": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "verified_abstention_criteria": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "idempotency_rule": {
+          "type": "string",
+          "minLength": 1
+        },
+        "adaptation_bounds": {
+          "$ref": "#/$defs/adaptationBounds"
+        },
+        "pause_rule": {
+          "type": "string",
+          "minLength": 1
+        },
+        "retirement_rule": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expected_benefit": {
+          "$ref": "#/$defs/nullableBoundedScore"
+        },
+        "probability_success": {
+          "$ref": "#/$defs/nullableBoundedScore"
+        },
+        "information_gain": {
+          "$ref": "#/$defs/nullableBoundedScore"
+        },
+        "external_branching_value": {
+          "$ref": "#/$defs/nullableBoundedScore"
+        },
+        "external_progress_probability": {
+          "$ref": "#/$defs/nullableBoundedScore"
+        },
+        "employment_compatibility": {
+          "$ref": "#/$defs/nullableBoundedScore"
+        },
+        "cost": {
+          "$ref": "#/$defs/nullableBoundedScore"
+        },
+        "attention_burden": {
+          "$ref": "#/$defs/nullableBoundedScore"
+        },
+        "risk": {
+          "$ref": "#/$defs/nullableBoundedScore"
+        },
+        "no_material_change_streak": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "consecutive_failures": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "deferred_cycles": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "resume_triggered": {
+          "type": "boolean"
+        },
+        "last_run_at": {
+          "$ref": "#/$defs/nullableDateTime"
+        },
+        "next_due_at": {
+          "$ref": "#/$defs/nullableDateTime"
+        },
+        "deadline_at": {
+          "$ref": "#/$defs/nullableDateTime"
+        },
+        "source_fresh_until": {
+          "$ref": "#/$defs/nullableDateTime"
+        },
+        "last_material_outcome_at": {
+          "$ref": "#/$defs/nullableDateTime"
+        },
+        "event_key": {
+          "type": "string"
+        },
+        "last_event_key": {
+          "type": "string"
+        },
+        "contradictions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "deadline_lead_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "definition_completeness": {
+          "enum": [
+            "COMPLETE",
+            "PARTIAL",
+            "UNKNOWN"
+          ]
+        }
       }
     },
     "advisorProposal": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["proposal_id", "loop_id", "action", "reason", "confidence", "evidence_refs"],
+      "required": [
+        "proposal_id",
+        "loop_id",
+        "action",
+        "reason",
+        "confidence",
+        "evidence_refs"
+      ],
       "properties": {
-        "proposal_id": {"type": "string", "minLength": 1},
-        "loop_id": {"type": "string", "minLength": 1},
-        "action": {"enum": ["SKIP_ONCE", "PAUSE", "RESUME", "SET_CADENCE"]},
-        "reason": {"type": "string", "minLength": 1},
-        "confidence": {"$ref": "#/$defs/boundedScore"},
+        "proposal_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "loop_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "action": {
+          "enum": [
+            "SKIP_ONCE",
+            "PAUSE",
+            "RESUME",
+            "SET_CADENCE"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "confidence": {
+          "$ref": "#/$defs/boundedScore"
+        },
         "evidence_refs": {
           "type": "array",
           "minItems": 1,
-          "items": {"type": "string", "minLength": 1}
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         },
-        "target_cadence_seconds": {"type": "integer", "minimum": 1}
+        "target_cadence_seconds": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     },
     "recentOutcome": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["outcome_id", "loop_id", "outcome_class", "observed_at", "evidence_refs"],
+      "required": [
+        "outcome_id",
+        "loop_id",
+        "outcome_class",
+        "observed_at",
+        "evidence_refs"
+      ],
       "properties": {
-        "outcome_id": {"type": "string", "minLength": 1},
-        "loop_id": {"type": "string", "minLength": 1},
+        "outcome_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "loop_id": {
+          "type": "string",
+          "minLength": 1
+        },
         "outcome_class": {
           "enum": [
             "VERIFIED_CONSEQUENCE",
@@ -339,8 +701,17 @@
             "CONTRADICTED"
           ]
         },
-        "observed_at": {"type": "string", "format": "date-time"},
-        "evidence_refs": {"type": "array", "items": {"type": "string", "minLength": 1}}
+        "observed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
       }
     },
     "canaryAuthority": {
@@ -358,21 +729,82 @@
         "verification_method"
       ],
       "properties": {
-        "grant_id": {"type": "string", "minLength": 1},
-        "principal_id": {"type": "string", "minLength": 1},
-        "loop_id": {"type": "string", "minLength": 1},
+        "grant_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "principal_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "loop_id": {
+          "type": "string",
+          "minLength": 1
+        },
         "allowed_actions": {
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
-          "items": {"enum": ["SKIP_ONCE", "PAUSE", "RESUME", "SET_CADENCE"]}
+          "items": {
+            "enum": [
+              "SKIP_ONCE",
+              "PAUSE",
+              "RESUME",
+              "SET_CADENCE"
+            ]
+          }
         },
-        "issued_at": {"type": "string", "format": "date-time"},
-        "expires_at": {"type": "string", "format": "date-time"},
-        "max_mutations": {"const": 1},
-        "rollback_required": {"const": true},
-        "verification_method": {"type": "string", "minLength": 1}
+        "issued_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "max_mutations": {
+          "const": 1
+        },
+        "rollback_required": {
+          "const": true
+        },
+        "verification_method": {
+          "type": "string",
+          "minLength": 1
+        }
       }
+    },
+    "nullableBoundedScore": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/boundedScore"
+        }
+      ]
+    },
+    "nullableNonnegativeInteger": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "integer",
+          "minimum": 0
+        }
+      ]
+    },
+    "nullableNonnegativeNumber": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "number",
+          "minimum": 0
+        }
+      ]
     }
   }
 }
