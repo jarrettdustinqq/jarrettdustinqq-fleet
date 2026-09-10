@@ -725,7 +725,6 @@
         "issued_at",
         "expires_at",
         "max_mutations",
-        "rollback_required",
         "verification_method"
       ],
       "properties": {
@@ -766,7 +765,7 @@
           "const": 1
         },
         "rollback_required": {
-          "const": true
+          "type": "boolean"
         },
         "verification_method": {
           "type": "string",

@@ -159,12 +159,20 @@ def add_canary_authority(snapshot: dict, loop_id: str = "LOOP.P3") -> None:
         "issued_at": "2026-09-02T04:00:00-05:00",
         "expires_at": "2026-09-03T04:00:00-05:00",
         "max_mutations": 1,
-        "rollback_required": True,
         "verification_method": "scheduler plus JACS exact readback",
     }
 
 
 class ContractTests(unittest.TestCase):
+    def test_optional_rollback_flag_must_be_boolean_when_present(self) -> None:
+        for value in (None, "false", 0, 1, [], {}):
+            with self.subTest(value=value):
+                snapshot = make_snapshot(requested_mode="CANARY")
+                add_canary_authority(snapshot)
+                snapshot["canary_authority"]["rollback_required"] = value
+                with self.assertRaisesRegex(AOG.ContractError, "rollback_required.*boolean"):
+                    AOG.evaluate(snapshot)
+
     def test_duplicate_loop_ids_are_rejected(self) -> None:
         snapshot = make_snapshot()
         snapshot["loops"].append(copy.deepcopy(snapshot["loops"][0]))
@@ -493,20 +501,24 @@ class AdaptationTests(unittest.TestCase):
         self.assertIn("HARD_OBLIGATION_CANNOT_BE_SKIPPED", proposal["reasons"])
         self.assertIn("DEADLINE_RELEVANT_LOOP_CANNOT_BE_SKIPPED", proposal["reasons"])
 
-    def test_clean_canary_emits_one_reversible_intent(self) -> None:
-        snapshot = make_snapshot(requested_mode="CANARY")
-        clear_journal(snapshot)
-        add_canary_authority(snapshot, "LOOP.P3")
-        snapshot["loops"][1]["no_material_change_streak"] = 3
-        result = AOG.evaluate(snapshot)
-        self.assertEqual("CANARY", result["effective_mode"])
-        self.assertTrue(result["production_mutation_allowed"])
-        self.assertEqual(1, len(result["mutation_intents"]))
-        intent = result["mutation_intents"][0]
-        self.assertEqual(intent["before"], intent["rollback"]["restore"])
-        self.assertEqual(86400, intent["before"]["cadence_seconds"])
-        self.assertEqual(172800, intent["after"]["cadence_seconds"])
-        self.assertEqual(intent["before"]["phase"], intent["after"]["phase"])
+    def test_clean_canary_does_not_require_rollback(self) -> None:
+        for rollback_required in (None, False, True):
+            with self.subTest(rollback_required=rollback_required):
+                snapshot = make_snapshot(requested_mode="CANARY")
+                clear_journal(snapshot)
+                add_canary_authority(snapshot, "LOOP.P3")
+                if rollback_required is not None:
+                    snapshot["canary_authority"]["rollback_required"] = rollback_required
+                snapshot["loops"][1]["no_material_change_streak"] = 3
+                result = AOG.evaluate(snapshot)
+                self.assertEqual("CANARY", result["effective_mode"])
+                self.assertTrue(result["production_mutation_allowed"])
+                self.assertEqual(1, len(result["mutation_intents"]))
+                intent = result["mutation_intents"][0]
+                self.assertEqual(intent["before"], intent["rollback"]["restore"])
+                self.assertEqual(86400, intent["before"]["cadence_seconds"])
+                self.assertEqual(172800, intent["after"]["cadence_seconds"])
+                self.assertEqual(intent["before"]["phase"], intent["after"]["phase"])
 
     def test_canary_never_emits_more_than_one_mutation(self) -> None:
         snapshot = make_snapshot(requested_mode="CANARY")

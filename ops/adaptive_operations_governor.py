@@ -88,7 +88,7 @@ POLICY_MANIFEST: dict[str, Any] = {
         "max_mutations_per_snapshot": 1,
         "allowed_actions": sorted(MUTATION_ACTIONS),
         "requires_exact_scoped_authority": True,
-        "requires_rollback": True,
+        "requires_rollback": False,
     },
     "scoring": {
         "priority_class": {"P0": 4000.0, "P1": 3000.0, "P2": 2000.0, "P3": 1000.0, "P4": 0.0},
@@ -503,7 +503,8 @@ def _validate_canary_authority(value: Any, snapshot: Mapping[str, Any]) -> None:
     _parse_time(_get_required(grant, "issued_at", "snapshot.canary_authority"), "snapshot.canary_authority.issued_at")
     _parse_time(_get_required(grant, "expires_at", "snapshot.canary_authority"), "snapshot.canary_authority.expires_at")
     _require_int(_get_required(grant, "max_mutations", "snapshot.canary_authority"), "snapshot.canary_authority.max_mutations", minimum=1)
-    _require_bool(_get_required(grant, "rollback_required", "snapshot.canary_authority"), "snapshot.canary_authority.rollback_required")
+    if "rollback_required" in grant:
+        _require_bool(grant["rollback_required"], "snapshot.canary_authority.rollback_required")
 
 
 def journal_gate(snapshot: Mapping[str, Any]) -> GateResult:
@@ -579,8 +580,6 @@ def canary_authority_gate(snapshot: Mapping[str, Any]) -> GateResult:
         reasons.append("CANARY_AUTHORITY_EXPIRED")
     if int(grant["max_mutations"]) != 1:
         reasons.append("CANARY_AUTHORITY_MUST_ALLOW_EXACTLY_ONE_MUTATION")
-    if not bool(grant["rollback_required"]):
-        reasons.append("CANARY_AUTHORITY_MUST_REQUIRE_ROLLBACK")
     loops = {loop["loop_id"]: loop for loop in snapshot["loops"]}
     target = loops.get(grant["loop_id"])
     if target is None:

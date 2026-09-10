@@ -11,7 +11,7 @@ AOG has three responsibilities:
 1. rank due work across loops with one deterministic policy;
 2. evaluate bounded cadence/lifecycle proposals from heuristics or an untrusted
    reasoning advisor; and
-3. emit at most one reversible canary mutation intent after every persistence,
+3. emit at most one canary mutation intent after every persistence,
    heartbeat, authority, and readback gate passes.
 
 AOG is not a scheduler, event store, model memory, or actuator. JACS remains the
@@ -129,7 +129,7 @@ loop's canonical adaptation bounds. Extra fields are rejected, preventing a
 proposal from laundering an objective, permission, phase, or stop-condition
 change. The deterministic kernel independently checks deadlines, hard
 obligations, recovery state, dependencies, lifecycle, cadence bounds, canary
-scope, expiry, and rollback requirements.
+scope, and expiry.
 
 The advisor never becomes the source of authority or truth.
 
@@ -171,9 +171,12 @@ requires one current authority record binding:
 - one exact loop ID;
 - an allowlist drawn from the four adaptation actions;
 - issue and expiry timestamps;
-- exactly one mutation;
-- a named verification method; and
-- mandatory rollback.
+- exactly one mutation; and
+- a named verification method.
+
+Reversibility and rollback availability are not eligibility criteria. The legacy
+`rollback_required` field is optional; either boolean value is accepted and does
+not gate execution. A supplied non-boolean value is still a contract error.
 
 When all gates pass, AOG may emit one intent containing the exact before/after
 configuration, a precondition hash, the existing scheduler ID, required
