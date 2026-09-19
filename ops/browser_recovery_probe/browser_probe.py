@@ -37,6 +37,99 @@ def stop(process):
             process.wait(timeout=1)
 
 
+def cleanup_browser(browser, pgid, launched_start, profile, port, grace=1, timeout=5):
+    """Bounded Linux cleanup, using launch session/profile and pidfds, never names."""
+    errors = []
+    known = {}
+    deadline = time.monotonic() + timeout
+    escalate = time.monotonic() + grace
+    sent = set()
+
+    def owned_live():
+        live = {}
+        for entry in Path('/proc').iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                if entry.stat().st_uid != os.getuid():
+                    continue
+                fields = (entry / 'stat').read_text().rsplit(')', 1)[1].split()
+                pid, identity = int(entry.name), fields[19]
+                if fields[0] in ('Z', 'X'):
+                    continue
+                in_session = (pgid is not None and launched_start is not None
+                              and int(fields[3]) == pgid and int(identity) >= int(launched_start))
+                owned = in_session or known.get(pid) == identity
+                if not owned and profile is not None:
+                    # Exact unique profile argument only; never retain unrelated command lines.
+                    owned = os.fsencode('--user-data-dir=' + str(profile)) in (entry / 'cmdline').read_bytes().split(b'\0')
+                if owned:
+                    known[pid] = identity
+                    live[pid] = identity
+            except (FileNotFoundError, ProcessLookupError):
+                continue
+        return live
+
+    descendants_exited = False
+    try:
+        while True:
+            # Delay reaping here so a newly exited leader keeps its PID reserved
+            # while descendants are inspected. The bounded wait below reaps it.
+            live = owned_live()
+            if not live:
+                descendants_exited = True
+                break
+            if time.monotonic() >= deadline:
+                errors.append('owned live processes remain: ' + ','.join(map(str, live)))
+                break
+            sig = signal.SIGKILL if time.monotonic() >= escalate else signal.SIGTERM
+            for pid, identity in live.items():
+                if (pid, identity, sig) in sent:
+                    continue
+                try:
+                    fd = os.pidfd_open(pid)
+                    try:
+                        if start_time(pid) == identity:
+                            signal.pidfd_send_signal(fd, sig)
+                            sent.add((pid, identity, sig))
+                    finally:
+                        os.close(fd)
+                except (FileNotFoundError, ProcessLookupError):
+                    pass
+            time.sleep(min(.05, max(0, deadline - time.monotonic())))
+    except Exception as error:
+        errors.append(str(error))
+    exited = browser is None
+    if browser is not None:
+        try:
+            browser.wait(timeout=max(.01, deadline - time.monotonic()))
+            exited = True
+        except subprocess.TimeoutExpired:
+            errors.append('direct browser wait deadline')
+    closed = port is None
+    if port is not None:
+        try:
+            with socket.create_connection(('127.0.0.1', port), timeout=.5):
+                closed = False
+        except ConnectionRefusedError:
+            closed = True
+        except OSError as error:
+            errors.append(str(error))
+    removed = profile is None
+    if profile is not None and descendants_exited and exited:
+        try:
+            shutil.rmtree(profile)
+            removed = not profile.exists()
+        except Exception as error:
+            errors.append(str(error))
+    result = dict(status='passed' if exited and closed and descendants_exited and removed and not errors else 'failed',
+                  browser_exited=exited, endpoint_closed=closed,
+                  descendants_exited=descendants_exited, profile_removed=removed)
+    if errors:
+        result['errors'] = errors
+    return result
+
+
 def run(out):
     info = out.stat()
     if not out.is_absolute() or not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
@@ -49,10 +142,12 @@ def run(out):
     began = time.monotonic()
     result = dict(schema_version=1, target=TARGET, local={'status': 'failed'}, cloud=CLOUD.copy(),
                   navigation=dict(status='skipped', http_status=None, title=None, url=None, elapsed_ms=None),
-                  recovery={'status': 'skipped'}, cleanup={'status': 'failed', 'browser_exited': False, 'endpoint_closed': False},
+                  recovery={'status': 'skipped'}, cleanup={'status': 'failed', 'browser_exited': False, 'endpoint_closed': False,
+                                                         'descendants_exited': False, 'profile_removed': False},
                   screenshots={'before': 'before.png', 'after': 'after.png'})
     browser = a = b = None
     profile = port = None
+    browser_pgid = browser_start = None
     logs = []
 
     def event(name, **values):
@@ -65,7 +160,8 @@ def run(out):
         env = dict(os.environ)
         env.pop('NODE_OPTIONS', None)
         env.pop('NODE_PATH', None)
-        return subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=stream, env=env)
+        return subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=stream, env=env,
+                                start_new_session=(name == 'browser'))
 
     def checkpoint(process, name, seconds):
         end = time.monotonic() + seconds
@@ -95,6 +191,10 @@ def run(out):
         browser = launch(['/usr/bin/chromium', '--headless=new', '--remote-debugging-address=127.0.0.1',
                           '--remote-debugging-port=0', '--user-data-dir=' + str(profile),
                           '--no-first-run', '--no-default-browser-check', '--disable-background-networking', 'about:blank'], 'browser')
+        browser_pgid = browser.pid  # start_new_session makes the launched PID its PGID/SID.
+        browser_start = start_time(browser.pid)
+        result['recovery'].update(browser_pid=browser.pid, browser_pgid=browser_pgid,
+                                  profile_path=str(profile), browser_start_before=browser_start)
         end = time.monotonic() + 15
         active = profile / 'DevToolsActivePort'
         while not active.exists():
@@ -110,7 +210,7 @@ def run(out):
         endpoint = f'ws://127.0.0.1:{port}{lines[1]}'
         recovery = result['recovery']
         recovery.update(status='failed', browser_pid=browser.pid, browser_start_before=start_time(browser.pid), endpoint_before=endpoint)
-        event('browser_started', **recovery)
+        event('browser_started', **{**recovery, 'status': 'passed'})
         command = ['/usr/bin/node', str(Path(__file__).with_name('browser_client.cjs'))]
         a = launch(command + ['a', endpoint, str(out)], 'client-a')
         recovery['client_a_pid'] = a.pid
@@ -148,29 +248,18 @@ def run(out):
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
         errors = []
-        for process in (a, b, browser):
+        for process in (a, b):
             try:
                 stop(process)
             except Exception as error:
                 errors.append(str(error))
-        exited = browser is None or browser.poll() is not None
-        closed = port is None
-        if port is not None:
-            try:
-                with socket.create_connection(('127.0.0.1', port), timeout=0.5):
-                    closed = False
-            except ConnectionRefusedError:
-                closed = True
-            except OSError as error:
-                errors.append(str(error))
-        try:
-            if profile is not None:
-                shutil.rmtree(profile)
-        except Exception as error:
-            errors.append(str(error))
+        cleanup = cleanup_browser(browser, browser_pgid, browser_start, profile, port)
+        errors.extend(cleanup.pop('errors', []))
         for stream in logs:
             stream.close()
-        result['cleanup'] = dict(status='passed' if exited and closed and not errors else 'failed', browser_exited=exited, endpoint_closed=closed)
+        result['cleanup'] = cleanup
+        if errors:
+            result['cleanup']['status'] = 'failed'
         if errors:
             result['cleanup_errors'] = errors
         for name in ('client-a', 'client-b'):

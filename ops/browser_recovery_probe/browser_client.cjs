@@ -1,4 +1,5 @@
 'use strict';
+// Browser session/group and profile cleanup belong exclusively to the supervisor.
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
