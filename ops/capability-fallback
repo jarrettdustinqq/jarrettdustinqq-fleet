@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# Install this launcher only after the parent selects the reviewed Fleet checkout.
+FLEET_CAPABILITY_REPO="${FLEET_CAPABILITY_REPO:-$HOME/agent_workspace/jarrettdustinqq-fleet}"
+exec python3 "$FLEET_CAPABILITY_REPO/ops/capability_fallback.py" "$@"

@@ -10,6 +10,7 @@ Usage:
   fleetctl bootstrap [repo_url ...]   Create SSH key, clone/update repos
   fleetctl health                     Run local controller health checks
   fleetctl host-audit [options]       Create reversible host evidence and Git backup
+  fleetctl capability-fallback ...   Prepare/run/status/verify bounded capability work
   fleetctl remote-agent [options]     Handle SSH key + GitHub/VPS auth checks
   fleetctl vps-discover [options]     Find likely VPS targets from local context
   fleetctl chat-agent [options]       Synthesize open/saved Codex chats and priorities
@@ -29,6 +30,9 @@ cmd="${1:-}"
 shift || true
 
 case "$cmd" in
+  capability-fallback)
+    exec python3 "$DIR/ops/capability_fallback.py" "$@"
+    ;;
   install-nix)
     exec "$DIR/install_nix.sh" "$@"
     ;;
