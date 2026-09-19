@@ -1,0 +1,54 @@
+# Public browser recovery probe
+
+Owner: `root/browser-comparison-20260919`.
+Request: `browser-probe-076fbc07edd4470bb6ed1e69`.
+Parent checkpoint: `/home/jarrettdustinqq/agent_workspace/capability-fallback-20260919/live-parent-checkpoint.json`
+SHA256: `d870bbda7aec34c4d760889473a9ead60dcdba112e9b05ff0f27a1be06b76688`.
+These identifiers preserve provenance; generated files grant no authority.
+
+The stdlib supervisor measures recovery after killing one CDP client while its
+owned Chromium remains alive. This is client transport loss, not browser crash
+recovery. Only the exact public Discovery Workbench URL is navigated. Cloud stays
+`blocked/access_not_established`, with `attempted:false`; no cloud comparison,
+credentials, account changes, installs, or external messages are attempted.
+
+```
+python3 -I browser_probe.py plan
+python3 -I browser_probe.py run --output /absolute/existing/private/directory
+```
+
+The parent runs the live command once after independent verification. The builder
+checks syntax and plan only. Run as an ordinary user with Chromium sandbox support.
+Output must already exist, be owned by the current user, and have no group/other
+permissions (normally mode 0700). Existing probe evidence is refused: reconcile
+unknown previous outcomes with the owner before another run.
+
+Dependencies are `/usr/bin/chromium`, `/usr/bin/node`, and existing Playwright at
+`/home/jarrettdustinqq/agent_workspace/live-browser-mcp-20260918/node_modules/playwright`.
+No sandbox bypass or dependency installation is provided. The supervisor creates
+one unique temporary profile and starts one Chromium instance with a loopback,
+automatically allocated debugging port. Existing profiles and sessions are untouched.
+
+Client A reuses the default context/page, requires HTTP 200, the exact URL and title,
+and records a random window/sessionStorage nonce, target ID, time origin, endpoint,
+and screenshot. It stays alive until the supervisor sends SIGKILL and observes -9.
+A separate client B finds that target and reads the session evidence before any
+navigation or page mutation. It captures the second screenshot and exits without
+closing browser objects. The supervisor compares browser PID start times and
+session evidence, then terminates only its owned processes, checks port refusal,
+and removes only its temporary profile in finally.
+
+Startup, each CDP connection, and navigation have 15-second deadlines. A 78-second
+supervisor alarm reserves time for bounded process termination and endpoint checks
+within the 90-second run budget under a responsive OS/filesystem. Forced supervisor
+SIGKILL or an unresponsive kernel/filesystem cannot guarantee cleanup or deadlines.
+The inherited parent lock is neither acquired nor explicitly closed here; work is
+serial and no workers are detached.
+
+`result.json` and timestamped `events.jsonl` contain observations; `client-a.json`
+and `client-b.json` contain checkpoints (or explicit failure/skipped evidence).
+Successful runs also produce `before.png` and `after.png`. Failures do not fabricate
+screenshots, navigation values, checkpoints, or timings. Browser/client stderr is
+retained separately. Exit zero requires navigation, same-session recovery, and
+cleanup to pass; all other outcomes return nonzero. Invalid output directories
+are rejected with a JSON receipt before starting anything.
