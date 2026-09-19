@@ -28,6 +28,8 @@ BLOCKED = {'login', 'consent', 'entitlement', 'denial', 'unknown_external_outcom
 RETRYABLE = {'prepared', 'queued'}
 TERMINAL = {'completed', 'builder_failed', 'verification_failed', 'continuation_failed',
             'checkpoint_changed', 'packet_changed', 'expired', 'blocked'}
+# Resolve once from a fixed system path, never from packet argv or the build tree.
+TRUSTED_PYTHON = Path('/usr/bin/python3').resolve(strict=True)
 
 
 def sha256(data: bytes) -> str:
@@ -102,6 +104,24 @@ def validate_id(request_id):
     return request_id
 
 
+def trusted_stage_argv(argv) -> list[str]:
+    """Only immutable parent-supplied Python source may control trusted stages."""
+    if (not isinstance(argv, list) or len(argv) < 5
+            or any(not isinstance(arg, str) or '\x00' in arg for arg in argv)
+            or argv[0] not in {'/usr/bin/python3', str(TRUSTED_PYTHON)}
+            or argv[1:4] != ['-I', '-S', '-c'] or not argv[4].strip()):
+        raise FallbackError('trusted stages require system Python -I -S -c inline code')
+    return [str(TRUSTED_PYTHON), *argv[1:]]
+
+
+def trusted_stage_cwd(packet) -> Path:
+    """Trusted stages never start in a directory controlled by the builder."""
+    directory = Path(packet['parent_checkpoint']['path']).parent.resolve(strict=True)
+    if directory.is_relative_to(Path(packet['workspace']).resolve(strict=True)):
+        raise FallbackError('checkpoint parent must be outside the builder workspace')
+    return directory
+
+
 def parse_packet(raw: bytes) -> dict:
     def unique_pairs(pairs):
         result = {}
@@ -141,11 +161,8 @@ def parse_packet(raw: bytes) -> dict:
     for key in ['verification_argv', 'continuation_argv']:
         if key not in packet:
             continue
-        argv = packet[key]
-        if (not isinstance(argv, list) or not argv or
-                any(not isinstance(a, str) or '\x00' in a for a in argv)
-                or not Path(argv[0]).is_absolute()):
-            raise FallbackError('verification and continuation require absolute executable argv')
+        trusted_stage_argv(packet[key])
+    trusted_stage_cwd(packet)
     artifacts = packet['artifacts']
     if not isinstance(artifacts, list) or not artifacts or len(artifacts) != len(set(map(str, artifacts))):
         raise FallbackError('provide a nonempty unique artifact list')
@@ -203,8 +220,11 @@ def prompt(packet) -> bytes:
             "or route around any provider/platform denial or approval. Unknown prior external "
             "outcomes require reconciliation with the owner, never replay. Keep work owned "
             "elsewhere with its owner and preserve existing sessions and secret privacy. "
-            "Do not launch another Codex worker or recursive agent builder. Do not run the "
-            "parent's verification or continuation; the parent runner handles them after "
+            "The parent runner already holds codex-heavy-work.lock and passes its lock "
+            "descriptors to this worker. Do not reacquire that lock: run authorized checks "
+            "serially under its existing ownership. Do not close those descriptors or "
+            "detach work. Do not launch another Codex worker or recursive agent builder. "
+            "Do not run the parent's verification or continuation; the parent handles them after "
             "your exit. Report artifacts and limitations accurately.\n" +
             json.dumps(packet, ensure_ascii=True)).encode()
 
@@ -449,8 +469,9 @@ class Fallback:
                 except (OSError, FallbackError):
                     return record('verification_failed', reason='declared artifact absent or unsafe')
                 record('verifier_started', artifacts=artifacts)
-                verifier = run_process(packet['verification_argv'], Path(packet['workspace']),
-                                       directory, 'verifier', lock_fds=locks)
+                verifier = run_process(trusted_stage_argv(packet['verification_argv']),
+                                       trusted_stage_cwd(packet), directory, 'verifier',
+                                       lock_fds=locks)
                 record('verifier_exited', verifier=verifier)
                 if verifier['exit_code'] != 0:
                     return record('verification_failed')
@@ -470,8 +491,9 @@ class Fallback:
                 if 'continuation_argv' in packet:
                     # No replay path ever accepts this or any other post-launch status.
                     record('continuation_started')
-                    continuation = run_process(packet['continuation_argv'], Path(packet['workspace']),
-                                               directory, 'continuation', lock_fds=locks)
+                    continuation = run_process(trusted_stage_argv(packet['continuation_argv']),
+                                               trusted_stage_cwd(packet), directory,
+                                               'continuation', lock_fds=locks)
                     record('continuation_exited', continuation=continuation)
                     if continuation['exit_code'] != 0:
                         return record('continuation_failed')

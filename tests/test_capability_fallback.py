@@ -34,10 +34,12 @@ class FallbackTests(unittest.TestCase):
             'task': 'Build a local artifact.', 'scope': 'Only this test workspace.',
             'authority': 'Local test files and local subprocesses only.',
             'workspace': str(self.workspace), 'artifacts': ['artifact.txt'],
-            'verification_argv': [sys.executable, '-c',
-                "from pathlib import Path; assert Path('artifact.txt').read_text() == 'built'; print('verified independently')"],
-            'continuation_argv': [sys.executable, '-c',
-                "from pathlib import Path; Path('continued').write_text('once')"],
+            'verification_argv': self.stage(
+                "import sys; from pathlib import Path; assert Path(sys.argv[1]).read_text() == 'built'; print('verified independently')",
+                self.workspace / 'artifact.txt'),
+            'continuation_argv': self.stage(
+                "import sys; from pathlib import Path; Path(sys.argv[1]).write_text('once')",
+                self.workspace / 'continued'),
         }
         self.save()
         self.engine = cf.Fallback(self.base / 'state', self.base / 'heavy.lock')
@@ -54,6 +56,10 @@ class FallbackTests(unittest.TestCase):
         self.env.start()
         os.environ.pop('CODEX_THREAD_ID', None)
         self.addCleanup(self.env.stop)
+
+    @staticmethod
+    def stage(code, *args):
+        return [str(cf.TRUSTED_PYTHON), '-I', '-S', '-c', code, *map(str, args)]
 
     def save(self):
         self.packet.write_text(json.dumps(self.data))
@@ -113,7 +119,7 @@ class FallbackTests(unittest.TestCase):
         self.assertEqual(self.run_task()['status'], 'completed')
 
     def test_failed_verifier_prevents_continuation(self):
-        self.data['verification_argv'] = [sys.executable, '-c', 'raise SystemExit(7)']
+        self.data['verification_argv'] = self.stage('raise SystemExit(7)')
         self.save()
         state = self.run_task()
         self.assertEqual(state['status'], 'verification_failed')
@@ -130,8 +136,9 @@ class FallbackTests(unittest.TestCase):
         self.assertFalse((self.workspace / 'continued').exists())
 
     def test_verifier_cannot_replace_artifact_and_claim_success(self):
-        self.data['verification_argv'] = [sys.executable, '-c',
-            "from pathlib import Path; Path('artifact.txt').write_text('replacement')"]
+        self.data['verification_argv'] = self.stage(
+            "import sys; from pathlib import Path; Path(sys.argv[1]).write_text('replacement')",
+            self.workspace / 'artifact.txt')
         self.save()
         self.assertEqual(self.run_task()['status'], 'verification_failed')
         self.assertFalse((self.workspace / 'continued').exists())
@@ -166,8 +173,8 @@ class FallbackTests(unittest.TestCase):
             self.assertEqual(self.run_task()['status'], 'completed')
 
     def test_stale_checkpoint_prevents_continuation(self):
-        self.data['verification_argv'] = [sys.executable, '-c',
-            'from pathlib import Path; Path(' + repr(str(self.checkpoint)) + ").write_text('changed')"]
+        self.data['verification_argv'] = self.stage(
+            'from pathlib import Path; Path(' + repr(str(self.checkpoint)) + ").write_text('changed')")
         self.save()
         self.assertEqual(self.run_task()['status'], 'checkpoint_changed')
         self.assertFalse((self.workspace / 'continued').exists())
@@ -179,8 +186,8 @@ class FallbackTests(unittest.TestCase):
 
     def test_saved_packet_tampering_prevents_continuation(self):
         saved = self.engine.request_dir('offline-1') / 'packet.json'
-        self.data['verification_argv'] = [sys.executable, '-c',
-            'from pathlib import Path; Path(' + repr(str(saved)) + ").write_text('{}')"]
+        self.data['verification_argv'] = self.stage(
+            'from pathlib import Path; Path(' + repr(str(saved)) + ").write_text('{}')")
         self.save()
         self.assertEqual(self.run_task()['status'], 'reconciliation_required')
         self.assertFalse((self.workspace / 'continued').exists())
@@ -288,6 +295,52 @@ class FallbackTests(unittest.TestCase):
         self.data['profile'] = 'unsafe'
         with self.assertRaises(cf.FallbackError):
             cf.builder_argv(self.data)
+
+    def test_trusted_stages_ignore_workspace_and_pythonpath_modules(self):
+        poison = "from pathlib import Path; Path(" + repr(str(self.base / 'poisoned')) + ").write_text('imported'); raise RuntimeError('untrusted import')"
+        for name in ['pathlib.py', 'sitecustomize.py']:
+            self.builder_code += '; Path(' + repr(name) + ').write_text(' + repr(poison) + ')'
+        self.data['verification_argv'] = self.stage(
+            "import sys, pathlib; assert sys.flags.isolated and sys.flags.no_site; "
+            "assert pathlib.Path.cwd() == pathlib.Path(sys.argv[1]); "
+            "assert pathlib.Path(sys.argv[2]).read_text() == 'built'",
+            self.base, self.workspace / 'artifact.txt')
+        self.save()
+        with mock.patch.dict(os.environ, {'PYTHONPATH': str(self.workspace)}):
+            self.assertEqual(self.run_task()['status'], 'completed')
+        self.assertFalse((self.base / 'poisoned').exists())
+        self.assertEqual((self.workspace / 'continued').read_text(), 'once')
+
+    def test_scripts_unisolated_commands_and_workspace_interpreters_are_rejected(self):
+        script = self.workspace / 'verifier.py'
+        script.write_text('raise SystemExit(0)')
+        alias = self.workspace / 'python3'
+        alias.symlink_to(cf.TRUSTED_PYTHON)
+        invalid = [
+            [str(cf.TRUSTED_PYTHON), str(script)],
+            [str(cf.TRUSTED_PYTHON), '-c', 'pass'],
+            [str(cf.TRUSTED_PYTHON), '-I', '-S', str(script)],
+            [str(alias), '-I', '-S', '-c', 'pass'],
+        ]
+        for key in ['verification_argv', 'continuation_argv']:
+            original = self.data[key]
+            for argv in invalid:
+                with self.subTest(stage=key, argv=argv):
+                    self.data[key] = argv
+                    self.save()
+                    with self.assertRaisesRegex(cf.FallbackError, 'system Python'):
+                        self.run_task()
+            self.data[key] = original
+        self.assertFalse((self.workspace / 'build-count').exists())
+
+    def test_checkpoint_parent_within_workspace_is_rejected(self):
+        checkpoint = self.workspace / 'checkpoint'
+        checkpoint.write_bytes(self.checkpoint.read_bytes())
+        self.data['parent_checkpoint']['path'] = str(checkpoint)
+        self.save()
+        with self.assertRaisesRegex(cf.FallbackError, 'outside the builder workspace'):
+            self.run_task()
+        self.assertFalse((self.workspace / 'build-count').exists())
 
     def test_optional_effort_is_bounded(self):
         self.patch.stop()

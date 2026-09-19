@@ -30,12 +30,15 @@ packet. Required fields:
   supplied to the builder. Generated output cannot widen any of these.
 - `workspace`: an existing absolute directory owned/assigned by the parent.
 - `artifacts`: nonempty unique relative file paths confined to the workspace.
-- `verification_argv`: the parent's independent verification command as a JSON
-  argv array, with an absolute executable path. It must exit zero on success,
-  verify the actual deliverable, and leave declared artifacts unchanged.
+- `verification_argv`: exactly `["/usr/bin/python3", "-I", "-S", "-c",
+  "<parent-owned inline code>", ...arguments]`. The runner executes the canonical
+  system Python resolved from that fixed path; its resolved path is also accepted.
+  Script paths, workspace interpreter aliases, and nonisolated commands are
+  rejected. It must verify the actual deliverable, exit zero on success, and leave
+  declared artifacts unchanged.
 
 Optional fields: timezone-qualified ISO-8601 `expires_at`, `continuation_argv`
-with an absolute executable path, `reasoning_effort` equal to `high` or `medium`,
+with the same isolated inline-Python form, `reasoning_effort` equal to `high` or `medium`,
 and `profile` equal to `browser-public`. Unknown fields are rejected. The model is
 inherited; effort is inherited unless explicitly supplied. The effort option uses
 the installed CLI's `-c` support and the same `model_reasoning_effort` key already
@@ -45,11 +48,19 @@ model that rejects this setting fails closed; it is never retried with weaker fl
 The optional profile must already be provisioned and reviewed by the parent; a
 profile name does not create browser access, credentials, or entitlement.
 
-The API trusts the parent, including its argv commands. All processes use
-`shell=False`; this is not an executable allowlist or a public-input sandbox.
-Keep the checkpoint and verifier implementation parent-owned and outside the
-builder's assigned workspace. Capture every deliverable relevant to continuation
-in `artifacts`. Provider approvals and real account restrictions still apply.
+The API trusts the parent, including its inline Python source, which is bound to
+the immutable packet bytes. Both trusted stages run from the resolved checkpoint
+parent directory, which must be outside the builder workspace. They use isolated
+mode with site initialization disabled, so workspace files and `PYTHONPATH` cannot
+replace standard-library imports. All processes use `shell=False`; the restricted
+entrypoint is not a public-input sandbox or proof that arbitrary Python is safe.
+Parent code must import only the standard library and evaluate generated code as a
+separate subprocess subject, never import it into the verifier. If the parent
+embeds a Node harness, keep that source literal in the packet, load installed
+dependencies by absolute path, and clear `NODE_OPTIONS` and `NODE_PATH` for that
+subprocess. Do not delegate trusted logic to a builder-editable script.
+Capture every deliverable relevant to continuation in `artifacts`. Provider
+approvals and real account restrictions still apply.
 Do not use verifier or continuation commands to acquire access, bypass a denial,
 send messages, enroll, purchase, or alter account security without the distinct
 required authorization. No blanket reversibility rule replaces those boundaries.
@@ -117,8 +128,11 @@ later. A completed request returns prior evidence even when the heavy lock is bu
 Inside a Codex session (`CODEX_THREAD_ID` is nonempty), a buildable request becomes
 `queued` without spawning a worker. Do not unset this guard to force nesting. The
 trusted outer parent invokes the same packet after the implementation worker exits
-and resources are free. The builder is instructed not to launch recursive workers;
-there is no recursive agent-building loop.
+and resources are free. The builder is told that the parent already holds the
+shared heavy-work lock and that its child descriptors inherit ownership. It must
+run authorized checks serially without reacquiring that lock, closing those
+descriptors, detaching work, or launching a nested worker. There is no recursive
+agent-building loop.
 
 State directories are mode 0700; packet, audit, state, stdout, and stderr files are
 mode 0600. Each append-only hash-chained audit event contains the next state and is
@@ -177,7 +191,9 @@ Tests were written before implementation: the red run failed on the missing modu
 The green suite covers independent verification, completion/no replay, conflicting
 bytes, real lock contention, nested queuing, blocked access/denial/unknown outcomes,
 expiry, changed checkpoints/packets/artifacts, interrupted launch/continuation,
-lock inheritance, and the audit/fsync ordering contract. Existing Fleet shell and
+lock inheritance, workspace/PYTHONPATH import poisoning, rejected external scripts
+and workspace interpreter aliases, checkpoint-directory separation, and the
+audit/fsync ordering contract. Existing Fleet shell and
 Python compile gates also apply. Control Hub behavior and its runtime/state contract
 are unchanged, so its scan and service-starting runtime smoke are not invoked.
 
@@ -197,11 +213,16 @@ an interrupted launch or continuation.
 
 ## Browser-comparison sample
 
-The handoff's private `sample-browser-request.json` is prepared only, not executed.
-It asks a future laptop builder to implement a local-first comparison helper using
+The handoff's private `sample-browser-request.json` is a legacy prepared-only
+packet that was never executed. Its external-script verifier predates the isolated
+inline-Python restriction and is intentionally incompatible with the current
+runner. Preserve its already-bound bytes; do not rewrite or run that request.
+New authorized work requires a distinct packet and stable request id.
+
+That legacy sample described a local-first comparison helper using
 `~/agent_workspace/live-browser-mcp-20260918` (installed `@playwright/mcp` 0.0.81).
-Its assigned workspace is separate from that existing capability. A parent-owned
-offline verifier checks the helper's plan with an explicit no-browser flag. The
+Its assigned workspace is separate from that existing capability. It specified a
+parent-owned offline plan check with an explicit no-browser flag. The
 cloud leg must be `blocked` pending actual Cloudflare access; absent credentials
 are not replaced with invented values. Browser account investigation stays with the
 parent. Building a comparison helper, executing browser comparisons, and obtaining
