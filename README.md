@@ -7,6 +7,7 @@ Small bootstrap toolkit for setting up a controller/dev node quickly.
 - `./fleetctl install-nix`: Install Nix in single-user mode.
 - `./fleetctl bootstrap [repo_url ...]`: Create SSH key, clone/update repos.
 - `./fleetctl health`: Validate local tooling and project workspace state.
+- `./fleetctl host-audit [options]`: Create a reversible host evidence bundle and wait for its report to finish writing before returning. See [host audit details](docs/host-remediation.md).
 - `./fleetctl remote-agent [options]`: Print/create SSH key, verify GitHub auth, optionally test a VPS target.
 - `./fleetctl vps-discover [options]`: Find likely VPS targets from local SSH/git history.
 - `./fleetctl chat-agent [options]`: Analyze open/saved Codex chats and recommend what to finish next.

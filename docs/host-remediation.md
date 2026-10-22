@@ -74,3 +74,7 @@ report creation completed. Diagnostic probes are counted separately as
 `DIAGNOSTIC_WARNING_COUNT`.
 
 A nonzero required-failure count causes the command to exit with status `1`.
+The command waits for the report writer before returning, including on early
+failures, so callers can read the completed report immediately. A report-writer
+failure makes an otherwise successful run fail; an existing audit failure keeps
+its original exit status.
