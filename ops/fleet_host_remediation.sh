@@ -73,7 +73,25 @@ DIAGNOSTIC_WARNINGS=0
 
 mkdir -p "$OUT" "$ARCHIVE_DIR" "$STATE_DIR"
 chmod 700 "$OUT" "$ARCHIVE_DIR" "$STATE_DIR"
+exec 3>&1 4>&2
 exec > >(tee -a "$REPORT") 2>&1
+REPORT_WRITER_PID=$!
+
+finish_report() {
+  local status=$? writer_status=0
+  trap - EXIT
+  # Close the pipe before waiting so tee can drain it and observe EOF.
+  exec 1>&3 2>&4 3>&- 4>&-
+  wait "$REPORT_WRITER_PID" || writer_status=$?
+  if [ "$writer_status" -ne 0 ]; then
+    printf 'ERROR: report writer failed (status %s): %s\n' "$writer_status" "$REPORT" >&2
+    if [ "$status" -eq 0 ]; then
+      status=$writer_status
+    fi
+  fi
+  exit "$status"
+}
+trap finish_report EXIT
 
 section() {
   printf '\n===== %s =====\n' "$1"
